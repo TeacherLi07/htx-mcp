@@ -873,35 +873,46 @@ def configuration_resource() -> str:
 
 @mcp.prompt(name="trade_preflight", title="HTX trade preflight")
 def trade_preflight_prompt(
-    symbol_or_contract: Annotated[
+    product: Annotated[
+        Literal["spot", "swap"],
+        Field(description="Product family: spot or USDT-margined perpetual swap."),
+    ],
+    instrument: Annotated[
         str, Field(description="Spot symbol or USDT-swap contract code to review.")
     ],
     side: Annotated[
-        str,
-        Field(
-            description="Trade side and intended action, for example buy/open or sell/close."
-        ),
-    ],
-    entry_price: Annotated[
-        str,
-        Field(
-            description="Planned entry price, including units and precision if known."
-        ),
-    ],
-    stop_loss: Annotated[
-        str,
-        Field(description="Planned stop-loss trigger and execution price, or 'none'."),
-    ],
-    take_profit: Annotated[
-        str,
-        Field(
-            description="Planned take-profit trigger and execution price, or 'none'."
-        ),
+        Literal["buy", "sell"], Field(description="Order side: buy or sell.")
     ],
     quantity: Annotated[
         str,
-        Field(description="Planned spot amount or contract volume, including units."),
+        Field(
+            description="Exact decimal spot amount or swap contract volume, expressed as a string."
+        ),
     ],
+    action: Annotated[
+        Literal["open", "close", "reduce"],
+        Field(description="Position intent; spot uses open."),
+    ] = "open",
+    order_kind: Annotated[
+        Literal["market", "limit", "post_only", "ioc", "fok"],
+        Field(description="Execution style; non-market styles require price."),
+    ] = "market",
+    price: Annotated[
+        str | None,
+        Field(description="Exact decimal limit price string; omit for a market order."),
+    ] = None,
+    margin_mode: Annotated[
+        Literal["isolated", "cross"],
+        Field(description="Swap margin mode; ignored for spot."),
+    ] = "isolated",
+    stop_loss: Annotated[
+        str | None,
+        Field(description="Optional exact decimal stop-loss trigger price string."),
+    ] = None,
+    take_profit: Annotated[
+        str | None,
+        Field(description="Optional exact decimal take-profit trigger price string."),
+    ] = None,
 ) -> str:
     """Create a compact HTX trade-preflight checklist before enabling a mutation tool.
 
@@ -910,14 +921,15 @@ def trade_preflight_prompt(
 
     return (
         "Prepare an HTX trade preflight review only; do not call execution tools or submit an order.\n"
-        f"- Instrument: {symbol_or_contract}\n- Side: {side}\n- Entry: {entry_price}\n"
-        f"- Stop loss: {stop_loss}\n- Take profit: {take_profit}\n- Quantity: {quantity}\n"
-        "1. Determine whether the instrument is spot or USDT-margined swap; ask the user if ambiguous.\n"
-        "2. Call htx_get_instrument_rules and htx_get_risk_snapshot for live precision, minimums, "
+        f"- Product: {product}\n- Instrument: {instrument}\n- Action: {action}\n"
+        f"- Side: {side}\n- Order kind: {order_kind}\n- Quantity: {quantity}\n"
+        f"- Price: {price or 'none'}\n- Margin mode: {margin_mode}\n"
+        f"- Stop loss trigger: {stop_loss or 'none'}\n- Take profit trigger: {take_profit or 'none'}\n"
+        "1. Call htx_get_instrument_rules and htx_get_risk_snapshot for live precision, minimums, "
         "price limits, balance, leverage, positions, and open orders.\n"
-        "3. Convert the proposal into one TradeIntent, preserving decimal values as strings, then call "
-        "htx_validate_trade_intent and htx_preview_trade.\n"
-        "4. Report blocking checks, warnings, normalized request, and whether stop/target direction is valid. "
+        "2. Convert the fields above into one TradeIntent, preserving decimal values as strings, and call "
+        "htx_validate_trade_intent. If its status is ready, call htx_preview_trade.\n"
+        "3. Report blocking checks, warnings, normalized request, and whether stop/target direction is valid. "
         "Do not set confirm=true; leave execution to a separate explicit user request."
     )
 

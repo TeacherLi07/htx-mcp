@@ -182,9 +182,12 @@ def test_trade_preflight_prompt_stays_read_only_and_uses_semantic_tools():
         mcp.get_prompt(
             "trade_preflight",
             {
-                "symbol_or_contract": "BTC-USDT",
-                "side": "buy/open",
-                "entry_price": "60000",
+                "product": "swap",
+                "instrument": "BTC-USDT",
+                "action": "open",
+                "side": "buy",
+                "order_kind": "limit",
+                "price": "60000",
                 "stop_loss": "59000",
                 "take_profit": "62000",
                 "quantity": "1",
@@ -199,6 +202,8 @@ def test_trade_preflight_prompt_stays_read_only_and_uses_semantic_tools():
     assert "htx_preview_trade" in text
     assert "do not call execution tools" in text
     assert "Do not set confirm=true" in text
+    assert "- Product: swap" in text
+    assert "- Action: open" in text
 
 
 def test_readable_swap_enums_are_converted_to_htx_values(monkeypatch):
