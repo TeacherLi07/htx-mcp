@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import re
 from decimal import Decimal
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
+from typing_extensions import NotRequired, TypedDict
 
 
 DecimalAmount = Annotated[
@@ -43,6 +44,96 @@ Confirm = Annotated[
         description="Must be true to request execution; false returns a dry-run preview."
     ),
 ]
+
+
+class ValidationCheck(TypedDict):
+    severity: Literal["error", "warning", "info"]
+    code: str
+    message: str
+
+
+class MarketSnapshotResult(TypedDict):
+    product: Literal["spot", "swap"]
+    instrument: str
+    profile: Literal["minimal", "analysis", "execution"]
+    as_of_ms: int
+    data: dict[str, Any]
+    warnings: list[str]
+    raw: NotRequired[dict[str, Any]]
+
+
+class InstrumentRulesResult(TypedDict):
+    product: Literal["spot", "swap"]
+    instrument: str | None
+    matched: dict[str, Any] | None
+    rules: dict[str, Any] | list[dict[str, Any]] | None
+    available_count: int
+
+
+class AccountSnapshotResult(TypedDict):
+    product: Literal["spot", "swap"]
+    instrument: str | None
+    margin_mode: Literal["isolated", "cross"] | None
+    as_of_ms: int
+    warnings: list[str]
+    account_id: NotRequired[str]
+    balances: NotRequired[Any]
+    positions: NotRequired[Any]
+    open_orders: NotRequired[Any]
+    api_status: NotRequired[Any]
+    raw: NotRequired[dict[str, Any]]
+
+
+class RiskSnapshotResult(TypedDict):
+    product: Literal["spot", "swap"]
+    instrument: str
+    market: dict[str, Any]
+    account: dict[str, Any]
+    warnings: list[str]
+
+
+class TradeValidationResult(TypedDict):
+    plan_id: str
+    status: Literal["ready", "blocked"]
+    product: Literal["spot", "swap"]
+    instrument: str
+    reference_price: str | None
+    rules: dict[str, Any] | None
+    checks: list[ValidationCheck]
+    revalidate_before_execution: bool
+
+
+class TradePlanResult(TradeValidationResult):
+    request: dict[str, Any]
+    market: MarketSnapshotResult
+
+
+class ExecutionResult(TypedDict, total=False):
+    executed: bool
+    dry_run: bool
+    reason: str
+    tool: str
+    request: dict[str, Any]
+    ok: bool
+    error: dict[str, Any]
+    status: str
+    code: int | str
+    data: Any
+
+
+class TradePreviewResult(TradePlanResult):
+    execution: ExecutionResult
+
+
+class TradeSubmissionResult(TypedDict):
+    validation: TradePlanResult
+    execution: ExecutionResult
+
+
+class ReconcileTradeResult(TypedDict):
+    product: Literal["spot", "swap"]
+    instrument: str
+    order: Any
 
 
 class ProtectionSpec(BaseModel):

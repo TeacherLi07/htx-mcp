@@ -278,6 +278,8 @@ def test_trade_preview_request_matches_low_level_order_request(monkeypatch):
         )
     )
     assert invalid_quantity.structured_content["status"] == "blocked"
+    assert "request" not in invalid_quantity.structured_content
+    assert "market" not in invalid_quantity.structured_content
     assert any(
         check["code"] == "quantity_precision"
         for check in invalid_quantity.structured_content["checks"]
@@ -301,6 +303,57 @@ def test_trade_preview_request_matches_low_level_order_request(monkeypatch):
         check["code"] == "market_price_ignored"
         for check in market_preview.structured_content["checks"]
     )
+
+
+def test_blocked_submission_uses_the_stable_submission_envelope(monkeypatch):
+    _install_router(
+        monkeypatch,
+        {
+            "/linear-swap-api/v1/swap_contract_info": _ok(
+                [
+                    {
+                        "contract_code": "BTC-USDT",
+                        "volume_tick": "1",
+                        "price_tick": "0.1",
+                        "min_volume": "1",
+                    }
+                ]
+            ),
+            "/linear-swap-ex/market/detail/merged": {
+                "status": "ok",
+                "tick": {"close": "60000.1"},
+            },
+            "/linear-swap-ex/market/depth": {
+                "status": "ok",
+                "tick": {"bids": [], "asks": []},
+            },
+            "/linear-swap-api/v1/swap_price_limit": _ok([]),
+        },
+    )
+
+    result = asyncio.run(
+        mcp.call_tool(
+            "htx_submit_trade",
+            {
+                "intent": {
+                    "product": "swap",
+                    "instrument": "BTC-USDT",
+                    "side": "buy",
+                    "order_kind": "limit",
+                    "quantity": "1.5",
+                    "price": "60000.1",
+                }
+            },
+        )
+    ).structured_content
+
+    assert set(result) == {"validation", "execution"}
+    assert result["validation"]["status"] == "blocked"
+    assert result["execution"] == {
+        "executed": False,
+        "dry_run": True,
+        "reason": "validation_blocked",
+    }
 
 
 @pytest.mark.parametrize("order_kind", ["ioc", "fok"])

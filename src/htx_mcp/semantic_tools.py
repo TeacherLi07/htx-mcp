@@ -20,12 +20,22 @@ from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import Field
 
 from .models import (
+    AccountSnapshotResult,
     Confirm,
     DecimalAmount,
     DecimalPrice,
+    ExecutionResult,
+    InstrumentRulesResult,
     MarginMode,
+    MarketSnapshotResult,
+    ReconcileTradeResult,
+    RiskSnapshotResult,
     SnapshotField,
     TradeIntent,
+    TradePlanResult,
+    TradePreviewResult,
+    TradeSubmissionResult,
+    TradeValidationResult,
 )
 from .precision import decimal_to_text
 
@@ -365,6 +375,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             "instrument": instrument,
             "margin_mode": margin_mode if product == "swap" else None,
             "as_of_ms": int(time.time() * 1000),
+            "warnings": [],
         }
         raw: dict[str, Any] = {}
         if product == "spot":
@@ -397,6 +408,18 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
         if include_raw:
             result["raw"] = raw
         return result
+
+    def validation_summary(result: TradePlanResult) -> TradeValidationResult:
+        return {
+            "plan_id": result["plan_id"],
+            "status": result["status"],
+            "product": result["product"],
+            "instrument": result["instrument"],
+            "reference_price": result["reference_price"],
+            "rules": result["rules"],
+            "checks": result["checks"],
+            "revalidate_before_execution": result["revalidate_before_execution"],
+        }
 
     def order_price_type(product: str, side: str, kind: str) -> str:
         if product == "spot":
@@ -472,7 +495,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
         )
         return body
 
-    async def validate(intent: TradeIntent) -> dict[str, Any]:
+    async def validate(intent: TradeIntent) -> TradePlanResult:
         instrument = (
             api._symbol(intent.instrument)
             if intent.product == "spot"
@@ -680,7 +703,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             ),
         ] = 100,
         include_raw: IncludeRaw = False,
-    ) -> dict[str, Any]:
+    ) -> MarketSnapshotResult:
         """Return one compact, concurrently collected market snapshot for analysis or execution.
 
         Prefer this aggregate over several low-level market calls.
@@ -699,7 +722,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                 description="Optional exact symbol or contract; omit to list all rules."
             ),
         ] = None,
-    ) -> dict[str, Any]:
+    ) -> InstrumentRulesResult:
         """Return HTX precision, minimum, status, and contract rules for one product.
 
         Use these rules before constructing any quantity or price.
@@ -724,7 +747,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             ),
         ] = None,
         include_raw: IncludeRaw = False,
-    ) -> dict[str, Any]:
+    ) -> AccountSnapshotResult:
         """Return a compact authenticated snapshot of balances, positions, and orders.
 
         This is read-only and requires API credentials.
@@ -739,7 +762,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
         product: Product,
         instrument: Instrument,
         margin_mode: MarginMode = "isolated",
-    ) -> dict[str, Any]:
+    ) -> RiskSnapshotResult:
         """Combine current market and account state into a pre-trade risk snapshot.
 
         The tool supplies facts and warnings; it does not make a trading decision.
@@ -766,13 +789,13 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
         }
 
     @mcp.tool(annotations=api.READ, toolsets={"planning"})
-    async def htx_validate_trade_intent(intent: TradeIntent) -> dict[str, Any]:
-        """Validate a product-neutral trade intent against live HTX rules without submitting it."""
+    async def htx_validate_trade_intent(intent: TradeIntent) -> TradeValidationResult:
+        """Validate a product-neutral trade intent and return checks without a request preview."""
 
-        return await validate(intent)
+        return validation_summary(await validate(intent))
 
     @mcp.tool(annotations=api.READ, toolsets={"planning"})
-    async def htx_preview_trade(intent: TradeIntent) -> dict[str, Any]:
+    async def htx_preview_trade(intent: TradeIntent) -> TradePreviewResult:
         """Build a normalized dry-run request after validating a product-neutral trade intent."""
 
         result = await validate(intent)
@@ -782,17 +805,17 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
     @mcp.tool(annotations=api.WRITE, toolsets={"execution"})
     async def htx_submit_trade(
         intent: TradeIntent, confirm: Confirm = False
-    ) -> dict[str, Any]:
+    ) -> TradeSubmissionResult:
         """Revalidate and submit one normalized spot or swap trade intent behind both safety gates."""
 
         validation = await validate(intent)
         if validation["status"] == "blocked":
-            validation["execution"] = {
+            execution: ExecutionResult = {
                 "executed": False,
                 "dry_run": True,
                 "reason": "validation_blocked",
             }
-            return validation
+            return {"validation": validation, "execution": execution}
         request = await build_request(
             intent,
             resolve_account=(
@@ -834,7 +857,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             ),
         ] = None,
         margin_mode: MarginMode = "isolated",
-    ) -> dict[str, Any]:
+    ) -> ReconcileTradeResult:
         """Read final order and fill state after a submission or network timeout.
 
         Query this before retrying a timed-out submission.
@@ -875,7 +898,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
         ] = None,
         margin_mode: MarginMode = "isolated",
         confirm: Confirm = False,
-    ) -> dict[str, Any]:
+    ) -> ExecutionResult:
         """Request cancellation of one normalized spot or swap order.
 
         Cancellation can race with fills; call htx_reconcile_trade afterward to verify the final order state.
@@ -923,7 +946,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             ),
         ] = "market",
         confirm: Confirm = False,
-    ) -> dict[str, Any]:
+    ) -> TradeSubmissionResult:
         """Close a USDT-swap position through the validated execution path.
 
         The default is a dry run and the final order must be reconciled.

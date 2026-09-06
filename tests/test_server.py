@@ -157,6 +157,25 @@ def test_tool_metadata_describes_every_published_argument():
     assert futures_client_id_schema["type"] == "integer"
     assert futures_client_id_schema["maximum"] == 9223372036854775807
 
+    semantic_outputs = {
+        tool.name: tool.output_schema for tool in tools if tool.name.startswith("htx_")
+    }
+    assert set(semantic_outputs["htx_get_market_snapshot"]["properties"]) >= {
+        "product",
+        "instrument",
+        "data",
+        "warnings",
+    }
+    assert set(semantic_outputs["htx_validate_trade_intent"]["properties"]) >= {
+        "plan_id",
+        "status",
+        "checks",
+    }
+    assert set(semantic_outputs["htx_submit_trade"]["properties"]) == {
+        "validation",
+        "execution",
+    }
+
 
 def test_trade_preflight_prompt_stays_read_only_and_uses_semantic_tools():
     prompt = asyncio.run(
