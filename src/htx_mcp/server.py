@@ -141,6 +141,15 @@ ClientOrderId = Annotated[
         description="Client-generated order ID used to query or cancel the order; keep it unique."
     ),
 ]
+SpotClientOrderId = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_-]+$",
+        description="Spot client order ID used to query or cancel the order; use 1-64 letters, digits, underscores, or hyphens and keep it unique.",
+    ),
+]
 CurrencyCode = Annotated[
     str,
     Field(
@@ -894,11 +903,16 @@ def trade_preflight_prompt(
     """
 
     return (
-        "Before submitting this HTX trade, verify live metadata and account state:\n"
+        "Prepare an HTX trade preflight review only; do not call execution tools or submit an order.\n"
         f"- Instrument: {symbol_or_contract}\n- Side: {side}\n- Entry: {entry_price}\n"
         f"- Stop loss: {stop_loss}\n- Take profit: {take_profit}\n- Quantity: {quantity}\n"
-        "- Confirm contract precision/minimum, available balance, leverage, existing positions/orders, "
-        "and stop/target direction. Use confirm=true only after this review."
+        "1. Determine whether the instrument is spot or USDT-margined swap; ask the user if ambiguous.\n"
+        "2. Call htx_get_instrument_rules and htx_get_risk_snapshot for live precision, minimums, "
+        "price limits, balance, leverage, positions, and open orders.\n"
+        "3. Convert the proposal into one TradeIntent, preserving decimal values as strings, then call "
+        "htx_validate_trade_intent and htx_preview_trade.\n"
+        "4. Report blocking checks, warnings, normalized request, and whether stop/target direction is valid. "
+        "Do not set confirm=true; leave execution to a separate explicit user request."
     )
 
 

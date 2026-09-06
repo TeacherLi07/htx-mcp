@@ -605,7 +605,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
         ] = 100,
         include_raw: IncludeRaw = False,
     ) -> dict[str, Any]:
-        """Return one compact, time-consistent market snapshot for analysis or execution.
+        """Return one compact, concurrently collected market snapshot for analysis or execution.
 
         Prefer this aggregate over several low-level market calls.
         """
@@ -799,9 +799,9 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
         margin_mode: MarginMode = "isolated",
         confirm: Confirm = False,
     ) -> dict[str, Any]:
-        """Request cancellation of one normalized spot or swap order, then reconcile it.
+        """Request cancellation of one normalized spot or swap order.
 
-        Cancellation can race with fills, so verify the final order state afterward.
+        Cancellation can race with fills; call htx_reconcile_trade afterward to verify the final order state.
         """
 
         if not order_id and not client_order_id:

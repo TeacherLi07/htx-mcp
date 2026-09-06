@@ -287,7 +287,7 @@ async def spot_get_order(order_id: server.ExchangeOrderId) -> dict[str, Any]:
 
 @server.mcp.tool(annotations=server.READ)
 async def spot_get_order_by_client_id(
-    client_order_id: server.ClientOrderId,
+    client_order_id: server.SpotClientOrderId,
 ) -> dict[str, Any]:
     """Read one HTX spot order by the server.client-generated order ID.
 
@@ -499,7 +499,7 @@ async def spot_place_order(
         Decimal,
         Field(
             gt=0,
-            description="Order amount in the base currency; pass a decimal string to preserve exact precision.",
+            description="Order amount: quote-currency value for buy-market, otherwise base-currency quantity. Pass a decimal string to preserve exact precision.",
         ),
     ],
     account_id: server.AccountId | None = None,
@@ -510,7 +510,7 @@ async def spot_place_order(
             description="Limit or stop-limit price; required for non-market orders.",
         ),
     ] = None,
-    client_order_id: server.ClientOrderId | None = None,
+    client_order_id: server.SpotClientOrderId | None = None,
     source: Annotated[
         Literal["spot-api"],
         Field(
@@ -533,7 +533,7 @@ async def spot_place_order(
     ] = False,
     confirm: server.Confirm = False,
 ) -> dict[str, Any]:
-    """Place one HTX spot order, with optional server.client ID, stop trigger, and self-match prevention.
+    """Place one HTX spot order, with optional client order ID, stop trigger, and self-match prevention.
 
     Check spot_get_symbols first for precision and minimums. Market orders omit ``price``; non-market orders require it; stop-limit orders also require ``stop_price`` and ``operator``. The result means HTX accepted the request, not that it filled. The call is a dry run unless ``confirm=true`` and HTX_ENABLE_TRADING=true.
     """
@@ -553,7 +553,7 @@ async def spot_place_order(
             "amount": decimal_to_text(amount),
             "price": server._decimal_or_none(price),
             "source": source,
-            "server.client-order-id": client_order_id,
+            "client-order-id": client_order_id,
             "self-match-prevent": 1 if self_match_prevent else 0,
             "stop-price": server._decimal_or_none(stop_price),
             "operator": operator,
@@ -584,18 +584,18 @@ async def spot_cancel_order(
 
 @server.mcp.tool(annotations=server.WRITE)
 async def spot_cancel_by_client_id(
-    client_order_id: server.ClientOrderId, confirm: server.Confirm = False
+    client_order_id: server.SpotClientOrderId, confirm: server.Confirm = False
 ) -> dict[str, Any]:
-    """Request cancellation of one HTX spot order by server.client order ID.
+    """Request cancellation of one HTX spot order by client order ID.
 
-    Use the same server.client ID used during placement and query the resulting order afterward. The call is a dry run unless both confirmation gates pass.
+    Use the same client order ID used during placement and query the resulting order afterward. The call is a dry run unless both confirmation gates pass.
     """
 
     client_order_id = server._text(client_order_id, "client_order_id")
     return await server._mutation(
         "spot_cancel_by_client_id",
         "/v1/order/orders/submitcancelclientorder",
-        {"server.client-order-id": client_order_id},
+        {"client-order-id": client_order_id},
         confirm,
     )
 

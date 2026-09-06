@@ -12,7 +12,7 @@ DecimalAmount = Annotated[
     Decimal,
     Field(
         gt=0,
-        description="Positive decimal quantity. Prefer a decimal string such as '0.001' to preserve exact precision.",
+        description="Positive decimal amount. For spot buy-market this is quote-currency value; for other spot orders it is base-currency quantity; for swaps it is contract volume. Prefer a decimal string such as '0.001' to preserve exact precision.",
     ),
 ]
 DecimalPrice = Annotated[

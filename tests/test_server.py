@@ -143,6 +143,37 @@ def test_tool_metadata_describes_every_published_argument():
         for schema in order_schema["properties"].values()
     )
 
+    spot_place = next(tool for tool in tools if tool.name == "spot_place_order")
+    client_id_schema = spot_place.input_schema["properties"]["client_order_id"][
+        "anyOf"
+    ][0]
+    assert client_id_schema["maxLength"] == 64
+    assert client_id_schema["pattern"] == "^[A-Za-z0-9_-]+$"
+
+
+def test_trade_preflight_prompt_stays_read_only_and_uses_semantic_tools():
+    prompt = asyncio.run(
+        mcp.get_prompt(
+            "trade_preflight",
+            {
+                "symbol_or_contract": "BTC-USDT",
+                "side": "buy/open",
+                "entry_price": "60000",
+                "stop_loss": "59000",
+                "take_profit": "62000",
+                "quantity": "1",
+            },
+        )
+    )
+
+    text = prompt.messages[0].content.text
+    assert "htx_get_instrument_rules" in text
+    assert "htx_get_risk_snapshot" in text
+    assert "htx_validate_trade_intent" in text
+    assert "htx_preview_trade" in text
+    assert "do not call execution tools" in text
+    assert "Do not set confirm=true" in text
+
 
 def test_readable_swap_enums_are_converted_to_htx_values(monkeypatch):
     fake = _use_fake_client(monkeypatch)
@@ -231,6 +262,35 @@ def test_low_level_swap_dry_run_serializes_decimal_values_as_strings():
     body = result.structured_content["request"]["body"]
     assert body["volume"] == "0.00000001"
     assert body["price"] == "60000.123456789012345678"
+
+
+def test_spot_client_order_id_uses_htx_request_field():
+    placement = asyncio.run(
+        mcp.call_tool(
+            "spot_place_order",
+            {
+                "symbol": "btcusdt",
+                "order_type": "buy-limit",
+                "amount": "0.001",
+                "price": "60000.1",
+                "account_id": "1000",
+                "client_order_id": "strategy-order-1",
+            },
+        )
+    )
+    cancellation = asyncio.run(
+        mcp.call_tool(
+            "spot_cancel_by_client_id",
+            {"client_order_id": "strategy-order-1"},
+        )
+    )
+
+    assert placement.structured_content["request"]["body"]["client-order-id"] == (
+        "strategy-order-1"
+    )
+    assert cancellation.structured_content["request"]["body"] == {
+        "client-order-id": "strategy-order-1"
+    }
 
 
 def test_spot_account_is_resolved_when_not_configured(monkeypatch):
@@ -326,6 +386,11 @@ def test_invalid_tool_parameters_are_rejected_by_mcp_before_http(monkeypatch):
                 "price": 100,
             },
             "stop_price",
+        ),
+        (
+            "spot_cancel_by_client_id",
+            {"client_order_id": "contains spaces"},
+            "client_order_id",
         ),
         ("futures_get_liquidation_orders", {}, "contract_code"),
     ]
