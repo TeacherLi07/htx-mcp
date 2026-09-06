@@ -211,6 +211,48 @@ def test_account_snapshot_matches_low_level_account_tools(monkeypatch):
     )
 
 
+def test_account_snapshot_reports_product_dependent_fields(monkeypatch):
+    _install_router(
+        monkeypatch,
+        {
+            "/v1/account/accounts/1000/balance": _ok({"list": []}),
+            "/v1/order/openOrders": _ok([]),
+        },
+    )
+
+    spot = asyncio.run(
+        mcp.call_tool(
+            "htx_get_account_snapshot",
+            {
+                "product": "spot",
+                "instrument": "btcusdt",
+                "include": ["balances", "positions", "api_status"],
+            },
+        )
+    ).structured_content
+
+    assert spot["warnings"] == [
+        "api_status: field is only supported for swap account snapshots",
+        "positions: field is only supported for swap account snapshots",
+    ]
+
+    _install_router(
+        monkeypatch,
+        {
+            "/linear-swap-api/v1/swap_account_info": _ok([]),
+            "/linear-swap-api/v1/swap_position_info": _ok([]),
+            "/linear-swap-api/v1/swap_api_trading_status": _ok({}),
+        },
+    )
+    swap = asyncio.run(
+        mcp.call_tool("htx_get_account_snapshot", {"product": "swap"})
+    ).structured_content
+
+    assert swap["warnings"] == [
+        "open_orders: instrument is required for swap account snapshots"
+    ]
+
+
 def test_trade_preview_request_matches_low_level_order_request(monkeypatch):
     responses = {
         "/linear-swap-api/v1/swap_contract_info": _ok(

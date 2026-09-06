@@ -315,7 +315,7 @@ async def futures_cancel_all_orders(
     )
 
 
-@server.mcp.tool(annotations=server.WRITE)
+@server.mcp.tool(annotations=server.IDEMPOTENT_WRITE)
 async def futures_switch_leverage(
     contract_code: server.ContractCode,
     lever_rate: Annotated[

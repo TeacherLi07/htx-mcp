@@ -110,6 +110,9 @@ READ = ToolAnnotations(
 WRITE = ToolAnnotations(
     readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True
 )
+IDEMPOTENT_WRITE = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=True
+)
 
 # The MCP Python SDK publishes function annotations as JSON Schema.  Keep the
 # common HTX vocabulary in reusable aliases so every tool exposes the same

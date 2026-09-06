@@ -230,6 +230,18 @@ def test_readable_swap_enums_are_converted_to_htx_values(monkeypatch):
     assert not fake.calls
 
 
+def test_idempotent_mutations_publish_accurate_annotations():
+    tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
+
+    for name in ("spot_dead_man_switch", "futures_switch_leverage"):
+        annotations = tools[name].annotations
+        assert annotations.read_only_hint is False
+        assert annotations.destructive_hint is True
+        assert annotations.idempotent_hint is True
+
+    assert tools["spot_place_order"].annotations.idempotent_hint is False
+
+
 def test_mutation_tool_returns_dry_run_without_confirm():
     result = asyncio.run(
         mcp.call_tool(

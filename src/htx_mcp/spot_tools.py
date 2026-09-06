@@ -465,7 +465,7 @@ async def spot_get_recent_history_orders(
     )
 
 
-@server.mcp.tool(annotations=server.WRITE)
+@server.mcp.tool(annotations=server.IDEMPOTENT_WRITE)
 async def spot_dead_man_switch(
     timeout_seconds: Annotated[
         int,

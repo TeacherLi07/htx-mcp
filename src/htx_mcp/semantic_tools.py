@@ -369,7 +369,14 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
         include: list[str] | None,
         include_raw: bool,
     ) -> dict[str, Any]:
-        fields = set(include or ["balances", "positions", "open_orders", "api_status"])
+        fields = set(
+            include
+            or (
+                ["balances", "open_orders"]
+                if product == "spot"
+                else ["balances", "positions", "open_orders", "api_status"]
+            )
+        )
         result: dict[str, Any] = {
             "product": product,
             "instrument": instrument,
@@ -379,6 +386,11 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
         }
         raw: dict[str, Any] = {}
         if product == "spot":
+            unsupported = fields.intersection({"positions", "api_status"})
+            result["warnings"].extend(
+                f"{field}: field is only supported for swap account snapshots"
+                for field in sorted(unsupported)
+            )
             account_id = await api._resolve_spot_account_id(None)
             result["account_id"] = account_id
             if "balances" in fields:
@@ -402,6 +414,10 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                     code, margin_mode
                 )
                 result["open_orders"] = _data(raw["open_orders"])
+            elif "open_orders" in fields:
+                result["warnings"].append(
+                    "open_orders: instrument is required for swap account snapshots"
+                )
             if "api_status" in fields:
                 raw["api_status"] = await api.futures_get_api_trading_status()
                 result["api_status"] = _data(raw["api_status"])
@@ -743,7 +759,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
         include: Annotated[
             list[Literal["balances", "positions", "open_orders", "api_status"]] | None,
             Field(
-                description="Account sections to include; omit for balances, positions, open orders, and API status."
+                description="Account sections to include. Omit for spot balances/open orders or swap balances/positions/open orders/API status. Spot does not support positions or API status; swap open orders require instrument."
             ),
         ] = None,
         include_raw: IncludeRaw = False,
