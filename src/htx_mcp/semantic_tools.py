@@ -18,7 +18,14 @@ from typing import Annotated, Any, Literal
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import Field
 
-from .models import Confirm, DecimalAmount, MarginMode, SnapshotField, TradeIntent
+from .models import (
+    Confirm,
+    DecimalAmount,
+    DecimalPrice,
+    MarginMode,
+    SnapshotField,
+    TradeIntent,
+)
 from .precision import decimal_to_text
 
 
@@ -152,10 +159,14 @@ def _check(
 def _step_check(
     checks: list[dict[str, str]], value: Decimal | None, step: Decimal | None, name: str
 ) -> None:
-    if value is None or step is None or step <= 0 or step >= 1:
+    if value is None or step is None or step <= 0:
         return
     with localcontext() as context:
-        context.prec = max(50, len(value.as_tuple().digits) + 10)
+        context.prec = max(
+            50,
+            len(value.as_tuple().digits) + 10,
+            len(step.as_tuple().digits) + 10,
+        )
         if value % step != 0:
             _check(
                 checks,
@@ -267,6 +278,12 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                 if product == "spot"
                 else api.futures_get_klines(code, period=period, size=candle_size)
             )
+        warnings: list[str] = []
+        if "contracts" in fields:
+            if product == "swap":
+                calls["contracts"] = api.futures_get_contracts(code)
+            else:
+                warnings.append("contracts: field is only supported for swap snapshots")
         if product == "swap":
             optional = {
                 "index": api.futures_get_index,
@@ -279,7 +296,6 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                     calls[name] = function(code)
         results = await asyncio.gather(*calls.values(), return_exceptions=True)
         data: dict[str, Any] = {}
-        warnings: list[str] = []
         raw: dict[str, Any] = {}
         for name, result in zip(calls, results):
             if isinstance(result, Exception):
@@ -383,7 +399,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                     "type": order_price_type("spot", intent.side, intent.order_kind),
                     "amount": decimal_to_text(intent.quantity),
                     "price": decimal_to_text(intent.price)
-                    if intent.price is not None
+                    if intent.order_kind != "market" and intent.price is not None
                     else None,
                     "source": "spot-api",
                     "client-order-id": intent.client_order_id,
@@ -396,7 +412,11 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             direction=intent.side,
             offset="close" if intent.action in {"close", "reduce"} else "open",
             lever_rate=intent.leverage,
-            price=decimal_to_text(intent.price) if intent.price is not None else None,
+            price=(
+                decimal_to_text(intent.price)
+                if intent.order_kind != "market" and intent.price is not None
+                else None
+            ),
             order_price_type=order_price_type("swap", intent.side, intent.order_kind),
             reduce_only=1 if intent.reduce_only or intent.action == "reduce" else 0,
             client_order_id=intent.client_order_id,
@@ -466,14 +486,23 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                 f"HTX did not return rules for {instrument}.",
             )
         else:
-            quantity_step = _rule_decimal(
-                rule,
-                "amount-precision",
-                "amount_precision",
-                "volume_tick",
-                "volume-precision",
-            )
-            _precision_check(checks, intent.quantity, quantity_step, "quantity")
+            if intent.product == "swap":
+                volume_tick = _rule_decimal(rule, "volume_tick")
+                _step_check(checks, intent.quantity, volume_tick, "quantity")
+                volume_precision = _rule_decimal(
+                    rule, "volume-precision", "volume_precision"
+                )
+                _precision_check(checks, intent.quantity, volume_precision, "quantity")
+            else:
+                quantity_precision = _rule_decimal(
+                    rule,
+                    "amount-precision",
+                    "amount_precision",
+                    "volume-precision",
+                )
+                _precision_check(
+                    checks, intent.quantity, quantity_precision, "quantity"
+                )
             minimum = _rule_decimal(
                 rule, "min-order-amt", "min_order_amt", "min_volume", "min-volume"
             )
@@ -484,8 +513,9 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                     "quantity_below_minimum",
                     f"Quantity is below HTX minimum {decimal_to_text(minimum)}.",
                 )
-            price_step = _rule_decimal(rule, "price-tick", "price_tick")
-            _precision_check(checks, intent.price, price_step, "price")
+            if intent.order_kind != "market":
+                price_tick = _rule_decimal(rule, "price-tick", "price_tick")
+                _step_check(checks, intent.price, price_tick, "price")
         market = await fetch_market(
             intent.product, instrument, "execution", None, "1hour", 1, False
         )
@@ -496,7 +526,9 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             )
         except (InvalidOperation, TypeError, ValueError):
             pass
-        entry = intent.price or reference
+        entry = (
+            intent.price if intent.order_kind != "market" else reference
+        ) or reference
         if intent.product == "swap" and entry is not None:
             if intent.take_profit:
                 valid = (
@@ -685,7 +717,14 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                 "reason": "validation_blocked",
             }
             return validation
-        request = await build_request(intent, True)
+        request = await build_request(
+            intent,
+            resolve_account=(
+                confirm
+                and api.client.config.enable_trading
+                and api.client.credentials_configured
+            ),
+        )
         path = (
             "/v1/order/orders/place"
             if intent.product == "spot"
@@ -734,7 +773,10 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                 payload = await api.spot_get_order(order_id or "")
         else:
             payload = await api.futures_get_order_info(
-                api._contract(instrument), order_id or "", margin_mode
+                api._contract(instrument),
+                order_id=order_id,
+                margin_mode=margin_mode,
+                client_order_id=client_order_id,
             )
         return {"product": product, "instrument": instrument, "order": _data(payload)}
 
@@ -792,6 +834,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             Literal["buy", "sell"],
             Field(description="Buy closes a short; sell closes a long."),
         ],
+        price: DecimalPrice | None = None,
         margin_mode: MarginMode = "isolated",
         order_kind: Annotated[
             Literal["market", "ioc", "fok"],
@@ -813,6 +856,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             side=side,
             order_kind=order_kind,
             quantity=quantity,
+            price=price,
             margin_mode=margin_mode,
             reduce_only=True,
         )

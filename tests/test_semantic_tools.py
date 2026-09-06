@@ -2,6 +2,8 @@ import asyncio
 from dataclasses import replace
 from urllib.parse import urlsplit
 
+import pytest
+
 import htx_mcp.server as server
 from htx_mcp.server import mcp
 
@@ -113,6 +115,33 @@ def test_swap_market_snapshot_matches_low_level_market_tools(monkeypatch):
     assert data["depth"]["bids"] == low_depth.structured_content["tick"]["bids"][:20]
     assert data["depth"]["asks"] == low_depth.structured_content["tick"]["asks"][:20]
     assert data["price_limit"] == low_limit.structured_content["data"]
+
+
+def test_swap_market_snapshot_includes_contract_rules_when_requested(monkeypatch):
+    contract = {
+        "contract_code": "BTC-USDT",
+        "volume_tick": "1",
+        "price_tick": "0.1",
+    }
+    _install_router(
+        monkeypatch,
+        {"/linear-swap-api/v1/swap_contract_info": _ok([contract])},
+    )
+
+    result = asyncio.run(
+        mcp.call_tool(
+            "htx_get_market_snapshot",
+            {
+                "product": "swap",
+                "instrument": "BTC-USDT",
+                "include": ["contracts"],
+            },
+        )
+    )
+
+    assert result.is_error is False
+    assert result.structured_content["data"]["contracts"] == [contract]
+    assert result.structured_content["warnings"] == []
 
 
 def test_instrument_rules_match_low_level_contract_info(monkeypatch):
@@ -240,4 +269,208 @@ def test_trade_preview_request_matches_low_level_order_request(monkeypatch):
     assert (
         preview.structured_content["request"]
         == low.structured_content["request"]["body"]
+    )
+
+    invalid_quantity = asyncio.run(
+        mcp.call_tool(
+            "htx_validate_trade_intent",
+            {"intent": {**intent, "quantity": "1.5"}},
+        )
+    )
+    assert invalid_quantity.structured_content["status"] == "blocked"
+    assert any(
+        check["code"] == "quantity_precision"
+        for check in invalid_quantity.structured_content["checks"]
+    )
+
+    market_preview = asyncio.run(
+        mcp.call_tool(
+            "htx_preview_trade",
+            {
+                "intent": {
+                    **intent,
+                    "order_kind": "market",
+                    "price": "60000.15",
+                }
+            },
+        )
+    )
+    assert market_preview.structured_content["status"] == "ready"
+    assert "price" not in market_preview.structured_content["request"]
+    assert any(
+        check["code"] == "market_price_ignored"
+        for check in market_preview.structured_content["checks"]
+    )
+
+
+@pytest.mark.parametrize("order_kind", ["ioc", "fok"])
+def test_close_position_passes_price_for_non_market_close_modes(
+    monkeypatch, order_kind
+):
+    _install_router(
+        monkeypatch,
+        {
+            "/linear-swap-api/v1/swap_contract_info": _ok(
+                [
+                    {
+                        "contract_code": "BTC-USDT",
+                        "volume_tick": "1",
+                        "price_tick": "0.1",
+                        "min_volume": "1",
+                    }
+                ]
+            ),
+            "/linear-swap-ex/market/detail/merged": {
+                "status": "ok",
+                "tick": {
+                    "close": "60000.1",
+                    "bid": ["60000.0", "1"],
+                    "ask": ["60000.2", "1"],
+                },
+            },
+            "/linear-swap-ex/market/depth": {
+                "status": "ok",
+                "tick": {"bids": [], "asks": []},
+            },
+            "/linear-swap-api/v1/swap_price_limit": _ok([]),
+        },
+    )
+
+    result = asyncio.run(
+        mcp.call_tool(
+            "htx_close_position",
+            {
+                "instrument": "BTC-USDT",
+                "quantity": "1",
+                "side": "sell",
+                "order_kind": order_kind,
+                "price": "60000.1",
+            },
+        )
+    )
+
+    validation = result.structured_content["validation"]
+    assert validation["status"] == "ready"
+    assert validation["request"]["price"] == "60000.1"
+    assert not any(check["code"] == "missing_price" for check in validation["checks"])
+
+
+def test_swap_reconciliation_uses_client_order_id(monkeypatch):
+    http = _install_router(
+        monkeypatch,
+        {
+            "/linear-swap-api/v1/swap_order_info": _ok(
+                [{"order_id": "987", "client_order_id": "client-123"}]
+            )
+        },
+    )
+
+    result = asyncio.run(
+        mcp.call_tool(
+            "htx_reconcile_trade",
+            {
+                "product": "swap",
+                "instrument": "BTC-USDT",
+                "client_order_id": "client-123",
+            },
+        )
+    )
+
+    assert result.is_error is False
+    assert result.structured_content["order"] == [
+        {"order_id": "987", "client_order_id": "client-123"}
+    ]
+    assert http.calls[-1][2]["json"] == {
+        "contract_code": "BTC-USDT",
+        "client_order_id": "client-123",
+    }
+
+
+def test_spot_market_order_preview_omits_supplied_price(monkeypatch):
+    _install_router(
+        monkeypatch,
+        {
+            "/v1/common/symbols": _ok([{"symbol": "btcusdt", "amount-precision": 8}]),
+            "/market/detail/merged": {
+                "status": "ok",
+                "tick": {"close": "60000.1"},
+            },
+            "/market/depth": {
+                "status": "ok",
+                "tick": {"bids": [], "asks": []},
+            },
+        },
+    )
+
+    result = asyncio.run(
+        mcp.call_tool(
+            "htx_preview_trade",
+            {
+                "intent": {
+                    "product": "spot",
+                    "instrument": "btcusdt",
+                    "side": "buy",
+                    "order_kind": "market",
+                    "quantity": "0.01",
+                    "price": "60000.1",
+                }
+            },
+        )
+    )
+
+    assert result.structured_content["status"] == "ready"
+    assert "price" not in result.structured_content["request"]
+
+
+def test_spot_submit_dry_run_does_not_resolve_an_account(monkeypatch):
+    _install_router(
+        monkeypatch,
+        {
+            "/v1/common/symbols": _ok([{"symbol": "btcusdt", "amount-precision": 8}]),
+            "/market/detail/merged": {
+                "status": "ok",
+                "tick": {"close": "60000.1"},
+            },
+            "/market/depth": {
+                "status": "ok",
+                "tick": {"bids": [], "asks": []},
+            },
+        },
+    )
+    monkeypatch.setattr(
+        server.client,
+        "config",
+        replace(
+            server.client.config,
+            api_key=None,
+            api_secret=None,
+            spot_account_id=None,
+        ),
+    )
+
+    async def fail_account_resolution(_account_id):
+        raise AssertionError("dry-run must not resolve a spot account")
+
+    monkeypatch.setattr(server, "_resolve_spot_account_id", fail_account_resolution)
+
+    result = asyncio.run(
+        mcp.call_tool(
+            "htx_submit_trade",
+            {
+                "intent": {
+                    "product": "spot",
+                    "instrument": "btcusdt",
+                    "side": "buy",
+                    "order_kind": "market",
+                    "quantity": "0.01",
+                }
+            },
+        )
+    )
+
+    assert result.structured_content["validation"]["status"] == "ready"
+    assert result.structured_content["execution"]["dry_run"] is True
+    assert (
+        result.structured_content["validation"]["request"]["account-id"]
+        == "<auto-resolve>"
     )

@@ -251,10 +251,22 @@ def test_spot_account_is_resolved_when_not_configured(monkeypatch):
 @pytest.mark.parametrize(
     ("tool_name", "arguments"),
     [
-        ("futures_get_history_orders", {"contract_code": "BTC-USDT"}),
-        ("futures_get_match_results", {"contract_code": "BTC-USDT"}),
-        ("futures_get_financial_records", {"contract_code": "BTC-USDT"}),
-        ("futures_get_liquidation_orders", {"contract_code": "BTC-USDT"}),
+        (
+            "futures_get_history_orders",
+            {"contract_code": "BTC-USDT", "size": 7},
+        ),
+        (
+            "futures_get_match_results",
+            {"contract_code": "BTC-USDT", "size": 7},
+        ),
+        (
+            "futures_get_financial_records",
+            {"contract_code": "BTC-USDT", "size": 7},
+        ),
+        (
+            "futures_get_liquidation_orders",
+            {"contract_code": "BTC-USDT", "size": 7},
+        ),
     ],
 )
 def test_historical_futures_tools_use_current_v3_endpoints(
@@ -266,6 +278,29 @@ def test_historical_futures_tools_use_current_v3_endpoints(
 
     assert result.is_error is False
     assert urlsplit(fake.calls[-1][1]).path.startswith("/linear-swap-api/v3/")
+    assert fake.calls[-1][2]["json"]["size"] == 7
+
+
+def test_cross_financial_records_use_the_cross_v3_endpoint(monkeypatch):
+    fake = _use_fake_client(monkeypatch)
+
+    result = asyncio.run(
+        mcp.call_tool(
+            "futures_get_financial_records",
+            {"margin_mode": "cross", "size": 9},
+        )
+    )
+
+    assert result.is_error is False
+    assert (
+        urlsplit(fake.calls[-1][1]).path
+        == "/linear-swap-api/v3/swap_cross_financial_record"
+    )
+    assert fake.calls[-1][2]["json"] == {
+        "mar_acct": "USDT",
+        "direct": "prev",
+        "size": 9,
+    }
 
 
 def test_invalid_tool_parameters_are_rejected_by_mcp_before_http(monkeypatch):
