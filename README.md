@@ -41,10 +41,17 @@ uv run pytest -q
 | `HTX_ENABLE_TRADING` | `false` | 是否允许写接口真正发往 HTX；`false` 时所有写工具只返回 dry-run |
 | `MCP_TRANSPORT` | `stdio` | `stdio`、`sse` 或 `streamable-http` |
 | `HTX_LOG_LEVEL` | `INFO` | stderr 日志级别 |
+| `HTTP_PROXY` / `HTTPS_PROXY` | 空 | 显式 HTTP CONNECT 代理 URL，例如 `http://127.0.0.1:7897` |
+| `NO_PROXY` | 继承环境 | 不经过代理的 Host；为强制 HTX 走代理可设为空字符串 |
 
 现货与合约使用独立 Host。除非部署环境明确要求其他官方域名，否则保持默认值。
 API 密钥建议只授予 Read；只有确实需要交易时才授予 Trade，并绑定 IP。Secret
 不会写入 MCP 响应或日志。
+
+HTTPX 默认读取进程的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 和 `NO_PROXY`。
+若代理端口同时提供 HTTP 与 SOCKS5，优先使用 `http://127.0.0.1:7897`；HTTPS
+请求会通过 HTTP CONNECT 隧道转发。仅 SOCKS5 可用时，需要将代理写成
+`socks5://127.0.0.1:7897` 并安装 HTTPX 的 SOCKS extra。
 
 ## MCP 客户端接入
 
