@@ -150,6 +150,13 @@ def test_tool_metadata_describes_every_published_argument():
     assert client_id_schema["maxLength"] == 64
     assert client_id_schema["pattern"] == "^[A-Za-z0-9_-]+$"
 
+    futures_place = next(tool for tool in tools if tool.name == "futures_place_order")
+    futures_client_id_schema = futures_place.input_schema["properties"][
+        "client_order_id"
+    ]["anyOf"][0]
+    assert futures_client_id_schema["type"] == "integer"
+    assert futures_client_id_schema["maximum"] == 9223372036854775807
+
 
 def test_trade_preflight_prompt_stays_read_only_and_uses_semantic_tools():
     prompt = asyncio.run(
@@ -262,6 +269,24 @@ def test_low_level_swap_dry_run_serializes_decimal_values_as_strings():
     body = result.structured_content["request"]["body"]
     assert body["volume"] == "0.00000001"
     assert body["price"] == "60000.123456789012345678"
+
+
+def test_low_level_swap_order_preserves_numeric_client_order_id():
+    result = asyncio.run(
+        mcp.call_tool(
+            "futures_place_order",
+            {
+                "contract_code": "BTC-USDT",
+                "volume": "1",
+                "direction": "buy",
+                "order_price_type": "limit",
+                "price": "60000.1",
+                "client_order_id": 123456,
+            },
+        )
+    )
+
+    assert result.structured_content["request"]["body"]["client_order_id"] == 123456
 
 
 def test_spot_client_order_id_uses_htx_request_field():
@@ -390,6 +415,17 @@ def test_invalid_tool_parameters_are_rejected_by_mcp_before_http(monkeypatch):
         (
             "spot_cancel_by_client_id",
             {"client_order_id": "contains spaces"},
+            "client_order_id",
+        ),
+        (
+            "futures_place_order",
+            {
+                "contract_code": "BTC-USDT",
+                "volume": 1,
+                "direction": "buy",
+                "price": 100,
+                "client_order_id": "not-numeric",
+            },
             "client_order_id",
         ),
         ("futures_get_liquidation_orders", {}, "contract_code"),

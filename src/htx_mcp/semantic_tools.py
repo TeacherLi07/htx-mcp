@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import time
 from decimal import Decimal, InvalidOperation, localcontext
 from types import ModuleType
@@ -49,6 +50,12 @@ IncludeRaw = Annotated[
     bool,
     Field(
         description="When true, include the original HTX envelopes in addition to compact normalized data."
+    ),
+]
+SemanticClientOrderId = Annotated[
+    str | int,
+    Field(
+        description="Product-specific client order ID: a 1-64 character identifier for spot, or a positive 64-bit integer for swaps."
     ),
 ]
 
@@ -147,6 +154,30 @@ def _wire(value: Any) -> Any:
         return {key: _wire(item) for key, item in value.items()}
     if isinstance(value, list):
         return [_wire(item) for item in value]
+    return value
+
+
+def _client_order_id(product: str, value: str | int | None) -> str | int | None:
+    """Validate product-specific order IDs used outside TradeIntent."""
+
+    if value is None:
+        return None
+    if product == "spot":
+        if not isinstance(value, str) or not re.fullmatch(
+            r"[A-Za-z0-9_-]{1,64}", value
+        ):
+            raise ToolError(
+                "spot client_order_id must contain 1-64 letters, digits, underscores, or hyphens"
+            )
+        return value
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 1 <= value <= 9223372036854775807
+    ):
+        raise ToolError(
+            "swap client_order_id must be an integer from 1 through 9223372036854775807"
+        )
     return value
 
 
@@ -752,7 +783,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             ),
         ] = None,
         client_order_id: Annotated[
-            str | None,
+            SemanticClientOrderId | None,
             Field(
                 description="Client order ID used at submission; provide this or order_id."
             ),
@@ -766,6 +797,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
 
         if not order_id and not client_order_id:
             raise ToolError("order_id or client_order_id is required")
+        client_order_id = _client_order_id(product, client_order_id)
         if product == "spot":
             if client_order_id and not order_id:
                 payload = await api.spot_get_order_by_client_id(client_order_id)
@@ -791,7 +823,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             ),
         ] = None,
         client_order_id: Annotated[
-            str | None,
+            SemanticClientOrderId | None,
             Field(
                 description="Client order ID used at submission; provide this or order_id."
             ),
@@ -806,6 +838,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
 
         if not order_id and not client_order_id:
             raise ToolError("order_id or client_order_id is required")
+        client_order_id = _client_order_id(product, client_order_id)
         if product == "spot":
             if client_order_id and not order_id:
                 path = "/v1/order/orders/submitcancelclientorder"
@@ -820,7 +853,9 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             body = api._swap_body(
                 api._contract(instrument),
                 order_id=order_id,
-                client_order_id=client_order_id,
+                client_order_id=str(client_order_id)
+                if client_order_id is not None
+                else None,
             )
         return await api._mutation("htx_cancel_trade", path, body, confirm)
 

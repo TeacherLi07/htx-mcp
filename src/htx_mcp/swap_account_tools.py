@@ -118,7 +118,7 @@ async def futures_get_order_info(
     contract_code: server.ContractCode,
     order_id: server.ExchangeOrderId | None = None,
     margin_mode: server.MarginMode = "isolated",
-    client_order_id: server.ClientOrderId | None = None,
+    client_order_id: server.FuturesClientOrderId | None = None,
 ) -> dict[str, Any]:
     """Read current status information for one HTX USDT-margined order.
 
@@ -135,9 +135,7 @@ async def futures_get_order_info(
             if order_id is not None
             else None,
             client_order_id=(
-                server._text(client_order_id, "client_order_id")
-                if client_order_id is not None
-                else None
+                str(client_order_id) if client_order_id is not None else None
             ),
         ),
     )

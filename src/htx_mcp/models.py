@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 DecimalAmount = Annotated[
@@ -104,10 +105,9 @@ class TradeIntent(BaseModel):
         default=False,
         description="Swap-only close protection. When true, the order cannot increase exposure.",
     )
-    client_order_id: str | None = Field(
+    client_order_id: str | int | None = Field(
         default=None,
-        min_length=1,
-        description="Optional unique client order ID for reconciliation after a timeout.",
+        description="Optional product-specific reconciliation ID: a 1-64 character identifier for spot, or an integer from 1 through 9223372036854775807 for swaps.",
     )
     take_profit: ProtectionSpec | None = Field(
         default=None,
@@ -117,3 +117,25 @@ class TradeIntent(BaseModel):
         default=None,
         description="Optional swap stop-loss protection; validated against side and entry price.",
     )
+
+    @model_validator(mode="after")
+    def validate_client_order_id(self) -> "TradeIntent":
+        value = self.client_order_id
+        if value is None:
+            return self
+        if self.product == "spot":
+            if not isinstance(value, str) or not re.fullmatch(
+                r"[A-Za-z0-9_-]{1,64}", value
+            ):
+                raise ValueError(
+                    "spot client_order_id must contain 1-64 letters, digits, underscores, or hyphens"
+                )
+        elif (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or not 1 <= value <= 9223372036854775807
+        ):
+            raise ValueError(
+                "swap client_order_id must be an integer from 1 through 9223372036854775807"
+            )
+        return self

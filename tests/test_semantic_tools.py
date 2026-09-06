@@ -360,7 +360,7 @@ def test_swap_reconciliation_uses_client_order_id(monkeypatch):
         monkeypatch,
         {
             "/linear-swap-api/v1/swap_order_info": _ok(
-                [{"order_id": "987", "client_order_id": "client-123"}]
+                [{"order_id": "987", "client_order_id": 123456}]
             )
         },
     )
@@ -371,18 +371,18 @@ def test_swap_reconciliation_uses_client_order_id(monkeypatch):
             {
                 "product": "swap",
                 "instrument": "BTC-USDT",
-                "client_order_id": "client-123",
+                "client_order_id": 123456,
             },
         )
     )
 
     assert result.is_error is False
     assert result.structured_content["order"] == [
-        {"order_id": "987", "client_order_id": "client-123"}
+        {"order_id": "987", "client_order_id": 123456}
     ]
     assert http.calls[-1][2]["json"] == {
         "contract_code": "BTC-USDT",
-        "client_order_id": "client-123",
+        "client_order_id": "123456",
     }
 
 

@@ -48,7 +48,7 @@ async def futures_place_order(
             description="When true, the order may only reduce an existing position; it cannot increase exposure."
         ),
     ] = False,
-    client_order_id: server.ClientOrderId | None = None,
+    client_order_id: server.FuturesClientOrderId | None = None,
     tp_trigger_price: Annotated[
         Decimal | None,
         Field(
@@ -103,7 +103,7 @@ async def futures_place_order(
         sl_trigger_price=sl_trigger_price,
     )
     if client_order_id is not None:
-        server._text(client_order_id, "client_order_id")
+        server._positive_integer(client_order_id, "client_order_id")
     if tp_order_price is not None:
         server._positive_number(tp_order_price, "tp_order_price")
     if sl_order_price is not None:
@@ -268,7 +268,7 @@ async def futures_place_batch_orders(
 async def futures_cancel_order(
     contract_code: server.ContractCode,
     order_id: server.ExchangeOrderId | None = None,
-    client_order_id: server.ClientOrderId | None = None,
+    client_order_id: server.FuturesClientOrderId | None = None,
     margin_mode: server.MarginMode = "isolated",
     confirm: server.Confirm = False,
 ) -> dict[str, Any]:
@@ -282,11 +282,11 @@ async def futures_cancel_order(
     if order_id is not None:
         order_id = server._text(order_id, "order_id")
     if client_order_id is not None:
-        client_order_id = server._text(client_order_id, "client_order_id")
+        server._positive_integer(client_order_id, "client_order_id")
     body = server._swap_body(
         contract_code,
         order_id=order_id,
-        client_order_id=client_order_id,
+        client_order_id=str(client_order_id) if client_order_id is not None else None,
     )
     return await server._mutation(
         "futures_cancel_order",

@@ -141,6 +141,14 @@ ClientOrderId = Annotated[
         description="Client-generated order ID used to query or cancel the order; keep it unique."
     ),
 ]
+FuturesClientOrderId = Annotated[
+    int,
+    Field(
+        gt=0,
+        le=9223372036854775807,
+        description="Numeric USDT-swap client order ID; use a unique integer from 1 through 9223372036854775807.",
+    ),
+]
 SpotClientOrderId = Annotated[
     str,
     Field(
@@ -403,12 +411,7 @@ class FuturesBatchOrder(TypedDict, total=False):
             ),
         ]
     ]
-    client_order_id: NotRequired[
-        Annotated[
-            str,
-            Field(description="Optional unique client order ID for reconciliation."),
-        ]
-    ]
+    client_order_id: NotRequired[FuturesClientOrderId]
     tp_trigger_price: NotRequired[
         Annotated[Decimal, Field(gt=0, description="Take-profit trigger price.")]
     ]
