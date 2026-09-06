@@ -36,9 +36,9 @@ uv run pytest -q
 | `HTX_API_SECRET` | 空 | HTX Secret Key；仅用于本地签名 |
 | `HTX_API_BASE_URL` | `https://api.huobi.pro` | 现货 API Host |
 | `HTX_FUTURES_API_BASE_URL` | `https://api.hbdm.com` | USDT 本位合约 API Host |
-| `HTX_SPOT_ACCOUNT_ID` | 空 | 默认现货账户 ID；可先调用 `spot_get_accounts` 获取 |
+| `HTX_SPOT_ACCOUNT_ID` | 空 | 可选默认现货账户 ID；留空时自动解析唯一 working spot 账户 |
 | `HTX_TIMEOUT_SECONDS` | `20` | 单次 HTTP 请求超时 |
-| `HTX_ENABLE_TRADING` | `false` | 是否允许写接口真正发往 HTX |
+| `HTX_ENABLE_TRADING` | `false` | 是否允许写接口真正发往 HTX；`false` 时所有写工具只返回 dry-run |
 | `MCP_TRANSPORT` | `stdio` | `stdio`、`sse` 或 `streamable-http` |
 | `HTX_LOG_LEVEL` | `INFO` | stderr 日志级别 |
 
@@ -75,6 +75,26 @@ stdio 是桌面 MCP 客户端最简单的传输方式。Windows 上可使用绝�
 如果使用 `sse` 或 `streamable-http`，必须在外部配置认证、反向代理和网络访问
 控制；不要将带 Trade 权限的服务直接暴露到公网。
 
+## 私有接口认证排障
+
+先调用只读工具 `htx_diagnose_private_access`。它会分别测试现货账户和合约 API
+交易状态，并安全返回 HTX 的 HTTP 状态、错误码和错误消息，不会返回 Secret、签名
+或完整请求 URL。
+
+Codex 配置中的布尔值必须使用标准 TOML 字符。只读配置应精确写成：
+
+```toml
+HTX_ENABLE_TRADING = "false"
+```
+
+不要在该行末尾加入中文逗号或其他字符。`false` 会让 `confirm=true` 的写工具继续
+返回 dry-run；只有诊断通过、你明确准备执行真实交易时，才改为 `"true"`。
+
+若诊断返回 `api-signature-not-valid` 或 `Incorrect Access Key`，依次核对 API Key
+是否仍有效、Access Key 与 Secret Key 是否来自同一条 API Key、IP 白名单是否包含
+运行 Codex 的出口 IP，以及是否因复制粘贴带入首尾空白。若返回权限错误，请在 HTX
+后台为该 API Key 开启所需的 Read 或 Trade 权限。
+
 ## 工具范围
 
 ### 现货
@@ -86,6 +106,7 @@ stdio 是桌面 MCP 客户端最简单的传输方式。Windows 上可使用绝�
 - `spot_get_accounts`、`spot_get_account_balance`、`spot_get_open_orders`、
   `spot_get_order*`、`spot_get_match_results`、`spot_get_history_orders`：账户和订单查询。
 - `spot_place_order`、`spot_cancel_*`、`spot_dead_man_switch`：现货下单、撤单和断线保护。
+- htx_diagnose_private_access：安全诊断现货与合约私有 API 的认证、权限和 Host 配置。
 
 ### USDT 本位合约
 

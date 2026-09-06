@@ -1,5 +1,7 @@
 import asyncio
+from dataclasses import replace
 
+import htx_mcp.server as server
 from htx_mcp.server import mcp
 
 
@@ -15,6 +17,7 @@ def test_server_registers_full_tool_surface():
         "futures_place_order",
         "futures_cancel_all_orders",
         "futures_place_trigger_order",
+        "htx_diagnose_private_access",
     }:
         assert expected in names
 
@@ -34,3 +37,13 @@ def test_mutation_tool_returns_dry_run_without_confirm():
     )
     assert result.structured_content["dry_run"] is True
     assert result.structured_content["executed"] is False
+
+
+def test_spot_account_is_resolved_when_not_configured(monkeypatch):
+    async def fake_private_get(path, **_query):
+        assert path == "/v1/account/accounts"
+        return {"status": "ok", "data": [{"id": 42, "type": "spot", "state": "working"}]}
+
+    monkeypatch.setattr(server, "_private_get", fake_private_get)
+    monkeypatch.setattr(server.client, "config", replace(server.client.config, spot_account_id=None))
+    assert asyncio.run(server._resolve_spot_account_id(None)) == "42"

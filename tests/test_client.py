@@ -4,7 +4,7 @@ import hashlib
 import hmac
 from urllib.parse import parse_qs, urlsplit
 
-from htx_mcp.client import HtxClient, HtxConfig, _canonical_query, ensure_confirmation, sign_request
+from htx_mcp.client import HtxClient, HtxConfig, _canonical_query, _env_optional, ensure_confirmation, sign_request
 
 
 class FakeResponse:
@@ -93,3 +93,10 @@ def test_mutation_preview_is_default_and_has_no_secret():
     )
     assert preview["dry_run"] is True
     assert "secret" not in str(preview)
+
+
+def test_optional_environment_values_are_trimmed(monkeypatch):
+    monkeypatch.setenv("HTX_TEST_VALUE", "  api-key-with-newline  ")
+    assert _env_optional("HTX_TEST_VALUE") == "api-key-with-newline"
+    monkeypatch.setenv("HTX_TEST_VALUE", "   ")
+    assert _env_optional("HTX_TEST_VALUE") is None

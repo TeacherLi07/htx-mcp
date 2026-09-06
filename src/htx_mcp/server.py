@@ -15,7 +15,7 @@ from typing import Any, Literal
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 
-from .client import HtxClient, HtxConfig, ensure_confirmation
+from .client import HtxApiError, HtxClient, HtxConfig, HtxError, ensure_confirmation
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=os.getenv("HTX_LOG_LEVEL", "INFO"), format="%(levelname)s %(message)s")
@@ -117,6 +117,52 @@ async def _mutation(
         private=True,
         base_url=_base_url_for(path),
     )
+
+
+async def _resolve_spot_account_id(account_id: str | None) -> str:
+    """Use the configured account, explicit account, or authenticated spot account."""
+
+    if account_id:
+        return account_id.strip()
+    if client.config.spot_account_id:
+        return client.config.spot_account_id
+
+    accounts = await _private_get("/v1/account/accounts")
+    candidates = [
+        item
+        for item in accounts.get("data", [])
+        if item.get("type") == "spot" and item.get("state") in {None, "working"}
+    ]
+    if len(candidates) != 1 or not candidates[0].get("id"):
+        raise ValueError(
+            "No unique spot account was found. Set HTX_SPOT_ACCOUNT_ID or pass account_id explicitly."
+        )
+    return str(candidates[0]["id"])
+
+
+def _diagnostic_error(error: Exception) -> dict[str, Any]:
+    """Expose actionable HTX errors without returning secrets or signed URLs."""
+
+    report: dict[str, Any] = {
+        "ok": False,
+        "error_type": type(error).__name__,
+        "message": str(error),
+    }
+    if isinstance(error, HtxApiError):
+        report["http_status"] = error.status_code
+        if isinstance(error.payload, dict):
+            report["htx_error_code"] = (
+                error.payload.get("err-code")
+                or error.payload.get("err_code")
+                or error.payload.get("code")
+            )
+            report["htx_error_message"] = (
+                error.payload.get("err-msg")
+                or error.payload.get("err_msg")
+                or error.payload.get("message")
+                or error.payload.get("msg")
+            )
+    return report
 
 
 def _validate_spot_order(order_type: str, amount: float, price: float | None) -> None:
@@ -318,12 +364,32 @@ async def spot_get_accounts() -> dict[str, Any]:
 
 
 @mcp.tool(annotations=READ)
+async def htx_diagnose_private_access() -> dict[str, Any]:
+    """Safely test private spot and futures access and return HTX error codes."""
+
+    checks: dict[str, Any] = {
+        "credentials_configured": client.credentials_configured,
+        "spot_host": client.config.base_url,
+        "futures_host": client.config.futures_base_url,
+        "trading_enabled": client.config.enable_trading,
+    }
+    for name, path in {
+        "spot_accounts": "/v1/account/accounts",
+        "futures_api_trading_status": "/linear-swap-api/v1/swap_api_trading_status",
+    }.items():
+        try:
+            response = await _private_get(path)
+            checks[name] = {"ok": True, "status": response.get("status"), "code": response.get("code")}
+        except HtxError as error:
+            checks[name] = _diagnostic_error(error)
+    return checks
+
+
+@mcp.tool(annotations=READ)
 async def spot_get_account_balance(account_id: str | None = None) -> dict[str, Any]:
     """Get balances for a spot account; omit account_id if HTX_SPOT_ACCOUNT_ID is set."""
 
-    resolved = account_id or client.config.spot_account_id
-    if not resolved:
-        raise ValueError("account_id is required or set HTX_SPOT_ACCOUNT_ID")
+    resolved = await _resolve_spot_account_id(account_id)
     return await _private_get(f"/v1/account/accounts/{resolved}/balance")
 
 
@@ -337,9 +403,7 @@ async def spot_get_open_orders(
 ) -> dict[str, Any]:
     """Get open spot orders, optionally filtered by symbol and pagination."""
 
-    resolved = account_id or client.config.spot_account_id
-    if not resolved:
-        raise ValueError("account_id is required or set HTX_SPOT_ACCOUNT_ID")
+    resolved = await _resolve_spot_account_id(account_id)
     if not 1 <= size <= 1000:
         raise ValueError("size must be between 1 and 1000")
     return await _private_get(
@@ -494,9 +558,7 @@ async def spot_place_order(
 ) -> dict[str, Any]:
     """Place a spot order; dry-run until confirm=true and HTX_ENABLE_TRADING=true."""
 
-    resolved = account_id or client.config.spot_account_id
-    if not resolved:
-        raise ValueError("account_id is required or set HTX_SPOT_ACCOUNT_ID")
+    resolved = await _resolve_spot_account_id(account_id)
     _validate_spot_order(order_type, amount, price)
     body = _q(
         **{
@@ -564,9 +626,7 @@ async def spot_cancel_open_orders(
 ) -> dict[str, Any]:
     """Submit cancellation for open spot orders matching criteria."""
 
-    resolved = account_id or client.config.spot_account_id
-    if not resolved:
-        raise ValueError("account_id is required or set HTX_SPOT_ACCOUNT_ID")
+    resolved = await _resolve_spot_account_id(account_id)
     if not 1 <= size <= 100:
         raise ValueError("size must be between 1 and 100")
     body = _q(

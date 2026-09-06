@@ -41,6 +41,13 @@ def _truthy(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_optional(name: str) -> str | None:
+    """Read one optional environment variable without pasted whitespace."""
+
+    value = os.getenv(name)
+    return value.strip() or None if value is not None else None
+
+
 @dataclass(frozen=True)
 class HtxConfig:
     """Runtime configuration loaded from environment variables."""
@@ -61,13 +68,13 @@ class HtxConfig:
         except ValueError as exc:
             raise HtxConfigurationError("HTX_TIMEOUT_SECONDS must be a number") from exc
         return cls(
-            api_key=os.getenv("HTX_API_KEY") or None,
-            api_secret=os.getenv("HTX_API_SECRET") or None,
+            api_key=_env_optional("HTX_API_KEY"),
+            api_secret=_env_optional("HTX_API_SECRET"),
             base_url=(os.getenv("HTX_API_BASE_URL") or "https://api.huobi.pro").rstrip("/"),
             futures_base_url=(os.getenv("HTX_FUTURES_API_BASE_URL") or "https://api.hbdm.com").rstrip("/"),
             timeout_seconds=timeout,
             enable_trading=_truthy(os.getenv("HTX_ENABLE_TRADING")),
-            spot_account_id=os.getenv("HTX_SPOT_ACCOUNT_ID") or None,
+            spot_account_id=_env_optional("HTX_SPOT_ACCOUNT_ID"),
         )
 
 
@@ -141,7 +148,7 @@ class HtxClient:
     ) -> str:
         self.require_credentials()
         parts = urlsplit(base_url)
-        host = parts.netloc
+        host = parts.netloc.lower()
         params: dict[str, Any] = {
             "AccessKeyId": self.config.api_key,
             "SignatureMethod": "HmacSHA256",
