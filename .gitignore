@@ -1,0 +1,9 @@
+# Never commit browser session cookies or authenticated Playwright state.
+htx_playwright_storage.json
+
+.venv/
+.env
+*.py[cod]
+__pycache__/
+.pytest_cache/
+*.egg-info/
