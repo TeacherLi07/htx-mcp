@@ -2,9 +2,17 @@ import asyncio
 import base64
 import hashlib
 import hmac
+from decimal import Decimal
 from urllib.parse import parse_qs, urlsplit
 
-from htx_mcp.client import HtxClient, HtxConfig, _canonical_query, _env_optional, ensure_confirmation, sign_request
+from htx_mcp.client import (
+    HtxClient,
+    HtxConfig,
+    _canonical_query,
+    _env_optional,
+    ensure_confirmation,
+    sign_request,
+)
 
 
 class FakeResponse:
@@ -43,14 +51,19 @@ def test_signature_matches_independent_hmac_calculation():
     }
     canonical = _canonical_query(params)
     message = f"GET\napi.huobi.pro\n/v1/order/orders\n{canonical}".encode()
-    expected = base64.b64encode(hmac.new(b"secret", message, hashlib.sha256).digest()).decode()
-    assert sign_request(
-        method="GET",
-        host="api.huobi.pro",
-        path="/v1/order/orders",
-        params=params,
-        secret="secret",
-    ) == expected
+    expected = base64.b64encode(
+        hmac.new(b"secret", message, hashlib.sha256).digest()
+    ).decode()
+    assert (
+        sign_request(
+            method="GET",
+            host="api.huobi.pro",
+            path="/v1/order/orders",
+            params=params,
+            secret="secret",
+        )
+        == expected
+    )
 
 
 def test_private_get_signs_endpoint_query():
@@ -59,7 +72,9 @@ def test_private_get_signs_endpoint_query():
         HtxConfig(api_key="key", api_secret="secret"),
         http=fake,
     )
-    result = asyncio.run(client.request("GET", "/v1/test", query={"symbol": "btcusdt"}, private=True))
+    result = asyncio.run(
+        client.request("GET", "/v1/test", query={"symbol": "btcusdt"}, private=True)
+    )
     assert result["data"]["accepted"] is True
     method, url, kwargs = fake.calls[0]
     query = parse_qs(urlsplit(url).query)
@@ -76,15 +91,46 @@ def test_private_post_keeps_business_fields_in_json_body():
         HtxConfig(api_key="key", api_secret="secret"),
         http=fake,
     )
-    asyncio.run(client.request("POST", "/v1/test", body={"contract_code": "BTC-USDT"}, private=True))
+    asyncio.run(
+        client.request(
+            "POST", "/v1/test", body={"contract_code": "BTC-USDT"}, private=True
+        )
+    )
     _, url, kwargs = fake.calls[0]
     query = parse_qs(urlsplit(url).query)
     assert "contract_code" not in query
     assert kwargs["json"] == {"contract_code": "BTC-USDT"}
 
 
+def test_decimal_business_fields_are_sent_as_exact_fixed_point_strings():
+    fake = FakeHttp()
+    client = HtxClient(
+        HtxConfig(api_key="key", api_secret="secret"),
+        http=fake,
+    )
+    asyncio.run(
+        client.request(
+            "POST",
+            "/v1/test",
+            body={
+                "volume": Decimal("0.00000001"),
+                "price": Decimal("60000.123456789012345678"),
+            },
+            private=True,
+        )
+    )
+    _, _, kwargs = fake.calls[0]
+    assert kwargs["json"] == {
+        "volume": "0.00000001",
+        "price": "60000.123456789012345678",
+    }
+
+
 def test_mutation_preview_is_default_and_has_no_secret():
-    client = HtxClient(HtxConfig(api_key="key", api_secret="secret", enable_trading=False), http=FakeHttp())
+    client = HtxClient(
+        HtxConfig(api_key="key", api_secret="secret", enable_trading=False),
+        http=FakeHttp(),
+    )
     preview = ensure_confirmation(
         client,
         tool_name="spot_place_order",

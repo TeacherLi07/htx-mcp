@@ -1,0 +1,119 @@
+"""Stable, product-neutral input models for semantic HTX tools."""
+
+from __future__ import annotations
+
+from decimal import Decimal
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, Field
+
+
+DecimalAmount = Annotated[
+    Decimal,
+    Field(
+        gt=0,
+        description="Positive decimal quantity. Prefer a decimal string such as '0.001' to preserve exact precision.",
+    ),
+]
+DecimalPrice = Annotated[
+    Decimal,
+    Field(
+        gt=0,
+        description="Positive decimal price. Prefer a decimal string such as '60000.125' to avoid binary floating-point rounding.",
+    ),
+]
+SnapshotField = Literal[
+    "ticker",
+    "depth",
+    "klines",
+    "index",
+    "funding",
+    "open_interest",
+    "price_limit",
+    "contracts",
+]
+MarginMode = Annotated[
+    Literal["isolated", "cross"],
+    Field(description="Swap margin mode: isolated or cross."),
+]
+Confirm = Annotated[
+    bool,
+    Field(
+        description="Must be true to request execution; false returns a dry-run preview."
+    ),
+]
+
+
+class ProtectionSpec(BaseModel):
+    """Exchange-side protection expressed with exact decimal values."""
+
+    trigger_price: DecimalPrice
+    order_price: DecimalPrice | None = Field(
+        default=None,
+        description="Optional execution price; omit to use HTX's optimal BBO execution.",
+    )
+    order_price_type: Literal["optimal_5", "optimal_10", "optimal_20"] = Field(
+        default="optimal_5",
+        description="HTX protection execution depth when order_price is omitted.",
+    )
+
+
+class TradeIntent(BaseModel):
+    """Product-neutral intent used by validation, preview, and execution tools."""
+
+    model_config = {"extra": "forbid"}
+
+    product: Literal["spot", "swap"] = Field(
+        description="Product family: spot or USDT-margined perpetual swap."
+    )
+    instrument: str = Field(
+        min_length=1,
+        description="Spot symbol such as 'btcusdt' or swap contract such as 'BTC-USDT'.",
+    )
+    account_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Optional spot account ID; omit to use HTX_SPOT_ACCOUNT_ID or resolve the unique working account.",
+    )
+    action: Literal["open", "close", "reduce"] = Field(
+        default="open",
+        description="Position intent. For swaps, reduce is a close-only order; spot uses open.",
+    )
+    side: Literal["buy", "sell"] = Field(
+        description="Order side. For swaps, buy closes shorts and sell closes longs when action is close/reduce."
+    )
+    order_kind: Literal["market", "limit", "post_only", "ioc", "fok"] = Field(
+        default="market",
+        description="Execution style. Market uses the exchange's aggressive/BBO mode; limit styles require price when applicable.",
+    )
+    quantity: DecimalAmount
+    price: DecimalPrice | None = Field(
+        default=None,
+        description="Limit price. Required for limit, post_only, IOC, and FOK styles; omit for market.",
+    )
+    margin_mode: Literal["isolated", "cross"] = Field(
+        default="isolated",
+        description="Swap margin mode; ignored for spot.",
+    )
+    leverage: int | None = Field(
+        default=None,
+        gt=0,
+        description="Optional positive swap leverage multiplier; omit to use the account's current leverage.",
+    )
+    reduce_only: bool = Field(
+        default=False,
+        description="Swap-only close protection. When true, the order cannot increase exposure.",
+    )
+    client_order_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Optional unique client order ID for reconciliation after a timeout.",
+    )
+    take_profit: ProtectionSpec | None = Field(
+        default=None,
+        description="Optional swap take-profit protection; validated against side and entry price.",
+    )
+    stop_loss: ProtectionSpec | None = Field(
+        default=None,
+        description="Optional swap stop-loss protection; validated against side and entry price.",
+    )

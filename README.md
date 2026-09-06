@@ -39,6 +39,7 @@ uv run pytest -q
 | `HTX_SPOT_ACCOUNT_ID` | 空 | 可选默认现货账户 ID；留空时自动解析唯一 working spot 账户 |
 | `HTX_TIMEOUT_SECONDS` | `20` | 单次 HTTP 请求超时 |
 | `HTX_ENABLE_TRADING` | `false` | 是否允许写接口真正发往 HTX；`false` 时所有写工具只返回 dry-run |
+| `HTX_TOOLSETS` | `analysis,planning,ops` | 工具集 allow-list：`analysis`、`planning`、`execution`、`advanced`、`ops`；`core` 等价于 analysis+planning，`trading` 等价于 analysis+planning+execution，`all` 发布完整兼容层 |
 | `MCP_TRANSPORT` | `stdio` | `stdio`、`sse` 或 `streamable-http` |
 | `HTX_LOG_LEVEL` | `INFO` | stderr 日志级别 |
 | `HTTP_PROXY` / `HTTPS_PROXY` | 空 | 显式 HTTP CONNECT 代理 URL，例如 `http://127.0.0.1:7897` |
@@ -123,8 +124,10 @@ HTX_ENABLE_TRADING = "false"
   `futures_get_funding_rate`、`futures_get_historical_funding_rate`、
   `futures_get_risk_info`、`futures_get_liquidation_orders`：衍生品市场数据。
 - `futures_get_account_info`、`futures_get_positions`、`futures_get_open_orders`、
-  `futures_get_order_*`、`futures_get_history_orders`、`futures_get_match_results`：
-  合约账户、仓位、订单和成交查询，支持 `isolated`/`cross`。
+  `futures_get_order_*`：合约账户、仓位和当前订单查询，支持 `isolated`/`cross`。
+- `futures_get_history_orders`、`futures_get_match_results`、
+  `futures_get_financial_records`、`futures_get_liquidation_orders`：使用 HTX 当前
+  v3 历史订单、成交、财务记录和强平查询接口；已停用的 v1 查询接口不会暴露。
 - `futures_place_order`、`futures_place_batch_orders`、`futures_cancel_*`、
   `futures_switch_leverage`、`futures_lightning_close_position`：合约交易。
 - `futures_place_trigger_order`、`futures_get_trigger_*`、
@@ -132,6 +135,46 @@ HTX_ENABLE_TRADING = "false"
 
 工具的完整名称、参数和 JSON Schema 会由 MCP Server 自动发布给客户端；文档中的
 通配符表示同一组工具，而不是可直接调用的工具名。
+
+### 面向 LLM 的参数约定
+
+工具 Schema 会为每个参数发布用途、单位、默认值、范围和枚举说明。合约筛选参数优先使用
+可读值：`all`、`open_long`、`open_short`、`close_short`、`close_long`、
+`liquidate_long`、`liquidate_short`、`buy`、`sell`；服务端会在请求 HTX 前转换成官方数字代码。
+触发单的 `trigger_type` 优先使用 `greater_or_equal` 或 `less_or_equal`，持仓模式优先使用
+`one_way` 或 `hedged`；为兼容旧调用，HTX 原始短代码和数字值仍可接受。
+
+批量合约下单的每个 `orders` 元素也有嵌套 JSON Schema，明确标出
+`contract_code`、`volume`、`direction`、`order_price_type` 等必填字段，以及价格、杠杆、
+TP/SL 和 `reduce_only` 等可选字段。时间参数统一使用 Unix 毫秒时间戳；下单、撤单、切换
+杠杆或持仓模式等写工具的 `confirm` 默认是 `false`，只会返回 dry-run 预览。
+
+价格、数量、成交量和 TP/SL 价格使用 `Decimal` 语义处理，并以固定点字符串发送给 HTX。
+高精度交易参数建议传字符串，例如 `"0.00000001"` 或 `"60000.123456789012345678"`，
+不要依赖 JSON 浮点数表达超高精度价格。
+
+### 面向自动分析与交易的工具集
+
+当前 API 映射工具仍完整保留在 `advanced` 工具集中；高层语义工具负责聚合常用工作流：
+
+- `analysis`：`htx_get_market_snapshot`、`htx_get_instrument_rules`、`htx_get_account_snapshot`、`htx_get_risk_snapshot`。
+- `planning`：`htx_validate_trade_intent`、`htx_preview_trade`、`htx_reconcile_trade`。
+- `execution`：`htx_submit_trade`、`htx_cancel_trade`、`htx_close_position`。
+- `ops`：诊断工具。
+
+生产环境可只暴露分析和规划工具：
+
+```powershell
+$env:HTX_TOOLSETS = "analysis,planning"
+```
+
+需要交易工具时，再启用：
+
+```powershell
+$env:HTX_TOOLSETS = "trading"
+```
+
+未设置 `HTX_TOOLSETS` 时只发布 `analysis,planning,ops`；需要旧版完整 API 面时显式设置 `HTX_TOOLSETS=all`。自动交易部署建议使用独立的只读分析进程和交易进程。
 
 ## 交易安全
 
@@ -164,9 +207,23 @@ uv run pytest -q
 测试使用 mock HTTP，不会触碰真实账户。若客户端无法发现工具，先确认 `uv`、项目
 绝对路径和环境变量均可用，并检查 stderr 日志；不要向 stdout 写入调试信息。
 
+`tests/test_semantic_tools.py` 会用同一组 mock HTX 响应分别调用底层 API 工具和高层
+语义工具，交叉校验行情快照、合约规则、账户状态和最终订单请求，防止聚合层与底层接口
+语义漂移。只读 API Key 的交易权限验证应在临时进程中设置：
+
+```powershell
+$env:HTX_TOOLSETS = "trading"
+$env:HTX_ENABLE_TRADING = "true"
+uv run --env-file .env htx-mcp
+```
+
+使用 `confirm=true` 调用 `htx_submit_trade` 后，预期由 HTX 返回权限错误；验证完成后恢复
+`HTX_ENABLE_TRADING=false`。不要把真实密钥写入仓库或测试 fixture。
+
 ## 官方文档
 
 - [HTX Open Platform API](https://www.htx.com/en-us/opend/newApiPages/)
 - [HTX Spot API Reference](https://huobiapi.github.io/docs/spot/v1/en/)
 - [HTX USDT-margined Contracts API Reference](https://huobiapi.github.io/docs/usdt_swap/v1/en/)
+- [MCP Python SDK: Tools](https://py.sdk.modelcontextprotocol.io/v2/servers/tools/)
 - [MCP Build a server](https://modelcontextprotocol.io/docs/2026-07-28/develop/build-server)

@@ -14,10 +14,13 @@ import hmac
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, Mapping
 from urllib.parse import quote, urlsplit
 
 import httpx
+
+from .precision import decimal_to_text
 
 
 class HtxError(RuntimeError):
@@ -31,7 +34,9 @@ class HtxConfigurationError(HtxError):
 class HtxApiError(HtxError):
     """HTX returned an HTTP or application-level error."""
 
-    def __init__(self, message: str, *, payload: Any = None, status_code: int | None = None):
+    def __init__(
+        self, message: str, *, payload: Any = None, status_code: int | None = None
+    ):
         super().__init__(message)
         self.payload = payload
         self.status_code = status_code
@@ -46,6 +51,20 @@ def _env_optional(name: str) -> str | None:
 
     value = os.getenv(name)
     return value.strip() or None if value is not None else None
+
+
+def _json_ready(value: Any) -> Any:
+    """Convert Decimal values recursively before handing data to httpx JSON encoding."""
+
+    if isinstance(value, Decimal):
+        return decimal_to_text(value)
+    if isinstance(value, Mapping):
+        return {key: _json_ready(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_ready(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_ready(item) for item in value]
+    return value
 
 
 @dataclass(frozen=True)
@@ -70,8 +89,12 @@ class HtxConfig:
         return cls(
             api_key=_env_optional("HTX_API_KEY"),
             api_secret=_env_optional("HTX_API_SECRET"),
-            base_url=(os.getenv("HTX_API_BASE_URL") or "https://api.huobi.pro").rstrip("/"),
-            futures_base_url=(os.getenv("HTX_FUTURES_API_BASE_URL") or "https://api.hbdm.com").rstrip("/"),
+            base_url=(os.getenv("HTX_API_BASE_URL") or "https://api.huobi.pro").rstrip(
+                "/"
+            ),
+            futures_base_url=(
+                os.getenv("HTX_FUTURES_API_BASE_URL") or "https://api.hbdm.com"
+            ).rstrip("/"),
             timeout_seconds=timeout,
             enable_trading=_truthy(os.getenv("HTX_ENABLE_TRADING")),
             spot_account_id=_env_optional("HTX_SPOT_ACCOUNT_ID"),
@@ -99,9 +122,13 @@ def _canonical_query(params: Mapping[str, Any]) -> str:
             continue
         if isinstance(value, bool):
             value = "true" if value else "false"
+        elif isinstance(value, Decimal):
+            value = decimal_to_text(value)
         pairs.append((str(key), str(value)))
     pairs.sort(key=lambda item: (item[0], item[1]))
-    return "&".join(f"{quote(key, safe='')}={quote(value, safe='')}" for key, value in pairs)
+    return "&".join(
+        f"{quote(key, safe='')}={quote(value, safe='')}" for key, value in pairs
+    )
 
 
 def sign_request(
@@ -123,7 +150,9 @@ def sign_request(
 class HtxClient:
     """Async HTTP client for public and signed HTX REST endpoints."""
 
-    def __init__(self, config: HtxConfig | None = None, http: httpx.AsyncClient | None = None):
+    def __init__(
+        self, config: HtxConfig | None = None, http: httpx.AsyncClient | None = None
+    ):
         self.config = config or HtxConfig.from_env()
         self._http = http or httpx.AsyncClient(timeout=self.config.timeout_seconds)
         self._owns_http = http is None
@@ -202,14 +231,14 @@ class HtxClient:
             url = f"{request_base_url}{path}?{auth_query}"
             request_kwargs: dict[str, Any] = {}
             if method != "GET":
-                request_kwargs["json"] = body
+                request_kwargs["json"] = _json_ready(body)
         else:
             url = f"{request_base_url}{path}"
             request_kwargs = {}
             if method == "GET":
                 request_kwargs["params"] = dict(query or {})
             else:
-                request_kwargs["json"] = body
+                request_kwargs["json"] = _json_ready(body)
 
         try:
             response = await self._http.request(method, url, **request_kwargs)
@@ -231,13 +260,25 @@ class HtxClient:
                 status_code=response.status_code,
             )
 
-        status = str(payload.get("status", "")).lower() if isinstance(payload, dict) else ""
+        status = (
+            str(payload.get("status", "")).lower() if isinstance(payload, dict) else ""
+        )
         code = payload.get("code") if isinstance(payload, dict) else None
         if status not in {"", "ok", "success"}:
-            message = payload.get("err_msg") or payload.get("message") or payload.get("msg") or payload
+            message = (
+                payload.get("err_msg")
+                or payload.get("message")
+                or payload.get("msg")
+                or payload
+            )
             raise HtxApiError(f"HTX API error: {message}", payload=payload)
         if code not in {None, 200, "200", 0, "0"}:
-            message = payload.get("err_msg") or payload.get("message") or payload.get("msg") or payload
+            message = (
+                payload.get("err_msg")
+                or payload.get("message")
+                or payload.get("msg")
+                or payload
+            )
             raise HtxApiError(f"HTX API error {code}: {message}", payload=payload)
         return payload
 
