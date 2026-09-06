@@ -422,6 +422,90 @@ def test_spot_market_order_preview_omits_supplied_price(monkeypatch):
     assert "price" not in result.structured_content["request"]
 
 
+def test_spot_validation_uses_product_specific_amount_minimums(monkeypatch):
+    _install_router(
+        monkeypatch,
+        {
+            "/v1/common/symbols": _ok(
+                [
+                    {
+                        "symbol": "btcusdt",
+                        "amount-precision": 8,
+                        "value-precision": 2,
+                        "limit-order-min-order-amt": "0.001",
+                        "sell-market-min-order-amt": "0.002",
+                        "min-order-value": "10",
+                        "price-tick": "0.1",
+                    }
+                ]
+            ),
+            "/market/detail/merged": {
+                "status": "ok",
+                "tick": {"close": "60000.1"},
+            },
+            "/market/depth": {
+                "status": "ok",
+                "tick": {"bids": [], "asks": []},
+            },
+        },
+    )
+
+    buy_market = asyncio.run(
+        mcp.call_tool(
+            "htx_validate_trade_intent",
+            {
+                "intent": {
+                    "product": "spot",
+                    "instrument": "btcusdt",
+                    "side": "buy",
+                    "order_kind": "market",
+                    "quantity": "1.234",
+                }
+            },
+        )
+    ).structured_content
+    sell_market = asyncio.run(
+        mcp.call_tool(
+            "htx_validate_trade_intent",
+            {
+                "intent": {
+                    "product": "spot",
+                    "instrument": "btcusdt",
+                    "side": "sell",
+                    "order_kind": "market",
+                    "quantity": "0.001",
+                }
+            },
+        )
+    ).structured_content
+    limit_order = asyncio.run(
+        mcp.call_tool(
+            "htx_validate_trade_intent",
+            {
+                "intent": {
+                    "product": "spot",
+                    "instrument": "btcusdt",
+                    "side": "buy",
+                    "order_kind": "limit",
+                    "quantity": "0.001",
+                    "price": "100",
+                }
+            },
+        )
+    ).structured_content
+
+    assert {check["code"] for check in buy_market["checks"]} >= {
+        "quantity_precision",
+        "order_value_below_minimum",
+    }
+    assert "quantity_below_minimum" in {
+        check["code"] for check in sell_market["checks"]
+    }
+    assert "order_value_below_minimum" in {
+        check["code"] for check in limit_order["checks"]
+    }
+
+
 def test_spot_submit_dry_run_does_not_resolve_an_account(monkeypatch):
     _install_router(
         monkeypatch,

@@ -527,26 +527,71 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             else:
                 quantity_precision = _rule_decimal(
                     rule,
-                    "amount-precision",
-                    "amount_precision",
-                    "volume-precision",
+                    "value-precision"
+                    if intent.side == "buy" and intent.order_kind == "market"
+                    else "amount-precision",
+                    "value_precision"
+                    if intent.side == "buy" and intent.order_kind == "market"
+                    else "amount_precision",
                 )
                 _precision_check(
                     checks, intent.quantity, quantity_precision, "quantity"
                 )
-            minimum = _rule_decimal(
-                rule, "min-order-amt", "min_order_amt", "min_volume", "min-volume"
-            )
+            if intent.product == "spot" and intent.order_kind == "market":
+                minimum = (
+                    _rule_decimal(rule, "min-order-value", "min_order_value")
+                    if intent.side == "buy"
+                    else _rule_decimal(
+                        rule,
+                        "sell-market-min-order-amt",
+                        "sell_market_min_order_amt",
+                        "min-order-amt",
+                        "min_order_amt",
+                    )
+                )
+            else:
+                minimum = _rule_decimal(
+                    rule,
+                    "limit-order-min-order-amt",
+                    "limit_order_min_order_amt",
+                    "min-order-amt",
+                    "min_order_amt",
+                    "min_volume",
+                    "min-volume",
+                )
             if minimum is not None and intent.quantity < minimum:
                 _check(
                     checks,
                     "error",
-                    "quantity_below_minimum",
-                    f"Quantity is below HTX minimum {decimal_to_text(minimum)}.",
+                    "order_value_below_minimum"
+                    if intent.product == "spot"
+                    and intent.side == "buy"
+                    and intent.order_kind == "market"
+                    else "quantity_below_minimum",
+                    (
+                        "Quote-currency order value"
+                        if intent.product == "spot"
+                        and intent.side == "buy"
+                        and intent.order_kind == "market"
+                        else "Quantity"
+                    )
+                    + f" is below HTX minimum {decimal_to_text(minimum)}.",
                 )
             if intent.order_kind != "market":
                 price_tick = _rule_decimal(rule, "price-tick", "price_tick")
                 _step_check(checks, intent.price, price_tick, "price")
+                if intent.product == "spot" and intent.price is not None:
+                    minimum_value = _rule_decimal(
+                        rule, "min-order-value", "min_order_value"
+                    )
+                    order_value = intent.quantity * intent.price
+                    if minimum_value is not None and order_value < minimum_value:
+                        _check(
+                            checks,
+                            "error",
+                            "order_value_below_minimum",
+                            f"Order value {decimal_to_text(order_value)} is below HTX minimum {decimal_to_text(minimum_value)}.",
+                        )
         market = await fetch_market(
             intent.product, instrument, "execution", None, "1hour", 1, False
         )
