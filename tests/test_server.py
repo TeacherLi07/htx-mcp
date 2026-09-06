@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import replace
+from importlib.metadata import version
 from urllib.parse import urlsplit
 
 import anyio
@@ -7,6 +8,7 @@ import pytest
 from mcp import ClientSession
 
 import htx_mcp.server as server
+from htx_mcp import __version__
 from htx_mcp.server import mcp
 
 
@@ -87,6 +89,11 @@ def test_server_registers_full_tool_surface():
         "htx_diagnose_private_access",
     }:
         assert expected in names
+
+
+def test_package_and_server_versions_stay_in_sync():
+    assert version("htx-official-api-mcp") == __version__
+    assert mcp.version == __version__
 
 
 def test_toolsets_can_publish_only_the_selected_semantic_layer(monkeypatch):

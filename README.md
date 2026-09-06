@@ -153,6 +153,10 @@ TP/SL 和 `reduce_only` 等可选字段。时间参数统一使用 Unix 毫秒�
 高精度交易参数建议传字符串，例如 `"0.00000001"` 或 `"60000.123456789012345678"`，
 不要依赖 JSON 浮点数表达超高精度价格。
 
+`client_order_id` 按产品使用不同类型：现货接受 1-64 位字母、数字、下划线或连字符；
+U 本位合约接受 `1` 到 `9223372036854775807` 的整数。合约查询和撤单会在 HTX 边界按接口
+要求转换为字符串，不要给合约订单使用带字母的 client ID。
+
 ### 面向自动分析与交易的工具集
 
 当前 API 映射工具仍完整保留在 `advanced` 工具集中；高层语义工具负责聚合常用工作流：
@@ -175,6 +179,14 @@ $env:HTX_TOOLSETS = "trading"
 ```
 
 未设置 `HTX_TOOLSETS` 时只发布 `analysis,planning,ops`；需要旧版完整 API 面时显式设置 `HTX_TOOLSETS=all`。自动交易部署建议使用独立的只读分析进程和交易进程。
+
+语义工具发布明确的 MCP `outputSchema`。`htx_validate_trade_intent` 只返回状态、规则和检查项；
+需要查看规范化 HTX 请求和采集时的市场上下文时调用 `htx_preview_trade`。`htx_submit_trade`
+无论校验阻断、dry-run 或真实提交，都稳定返回 `validation` 与 `execution` 两部分。
+
+`trade_preflight` prompt 的参数与交易意图一致，分别接收 `product`、`instrument`、`action`、
+`side`、`quantity`、`order_kind`、`price`、`margin_mode`、`stop_loss` 和 `take_profit`；它只会
+引导模型调用分析、校验和预览工具，不会调用执行工具。
 
 ## 交易安全
 

@@ -21,6 +21,7 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 from typing_extensions import NotRequired, Required, TypedDict
 
+from . import __version__
 from .client import (
     HtxApiError,
     HtxClient,
@@ -93,7 +94,7 @@ class HtxMcpServer(MCPServer):
 
 mcp = HtxMcpServer(
     name="htx-official-api",
-    version="0.1.0",
+    version=__version__,
     description="HTX official REST API tools for market data, account inspection, and guarded trading.",
     instructions=(
         "Use read-only tools to inspect live state and contract rules before trading. Prefer readable enum "
