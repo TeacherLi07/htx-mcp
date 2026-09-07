@@ -156,6 +156,23 @@ def _parse_spec(spec: str) -> tuple[str, tuple[int | Decimal, ...], str]:
     return name, values, f"{name}:{','.join(str(value) for value in values)}"
 
 
+def canonical_indicator_spec(spec: str) -> str:
+    """Validate an indicator specification and return its canonical name."""
+
+    return _parse_spec(spec)[2]
+
+
+def indicator_components(spec: str) -> set[str]:
+    """Return the output fields available for a validated indicator specification."""
+
+    name, _parameters, _key = _parse_spec(spec)
+    return {
+        "bbands": {"upper", "middle", "lower"},
+        "macd": {"macd", "signal", "histogram"},
+        "kdj": {"k", "d", "j"},
+    }.get(name, {"value"})
+
+
 def calculate_indicators(
     candles: list[Candle], specs: list[str]
 ) -> dict[str, dict[str, Any]]:

@@ -19,7 +19,14 @@ from typing import Annotated, Any, Literal
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import BaseModel, Field, model_validator
 
-from .indicators import calculate_indicators, candles_from_htx, period_ms
+from .client import HtxApiError
+from .indicators import (
+    calculate_indicators,
+    candles_from_htx,
+    canonical_indicator_spec,
+    indicator_components,
+    period_ms,
+)
 from .models import (
     AccountSnapshotResult,
     Confirm,
@@ -876,9 +883,18 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             api._symbol(instrument) if product == "spot" else api._contract(instrument)
         )
         need_ticker = any(condition.metric == "last_price" for condition in conditions)
-        indicator_specs = sorted(
-            {condition.indicator for condition in conditions if condition.indicator}
-        )
+        condition_indicators: dict[int, str] = {}
+        for index, condition in enumerate(conditions):
+            if condition.indicator is None:
+                continue
+            canonical = canonical_indicator_spec(condition.indicator)
+            if condition.component not in indicator_components(canonical):
+                raise ToolError(
+                    f"Indicator '{canonical}' does not provide component "
+                    f"'{condition.component}'"
+                )
+            condition_indicators[index] = canonical
+        indicator_specs = sorted(set(condition_indicators.values()))
         started_monotonic = time.monotonic()
         started_at_ms = int(time.time() * 1000)
         deadline = started_monotonic + timeout_seconds
@@ -890,60 +906,77 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             polls += 1
             observations: dict[str, Decimal] = {}
             try:
-                calls: dict[str, Any] = {}
-                if need_ticker:
-                    calls["ticker"] = (
-                        api.spot_get_ticker(code)
-                        if product == "spot"
-                        else api.futures_get_ticker(code)
-                    )
-                if indicator_specs:
-                    calls["klines"] = (
-                        api.spot_get_klines(
-                            code, period=candle_period, size=candle_size
+                remaining = deadline - time.monotonic()
+                if remaining > 0:
+                    calls: dict[str, Any] = {}
+                    if need_ticker:
+                        calls["ticker"] = (
+                            api.spot_get_ticker(code)
+                            if product == "spot"
+                            else api.futures_get_ticker(code)
                         )
-                        if product == "spot"
-                        else api.futures_get_klines(
-                            code, period=candle_period, size=candle_size
+                    if indicator_specs:
+                        calls["klines"] = (
+                            api.spot_get_klines(
+                                code, period=candle_period, size=candle_size
+                            )
+                            if product == "spot"
+                            else api.futures_get_klines(
+                                code, period=candle_period, size=candle_size
+                            )
                         )
+                    results = await asyncio.wait_for(
+                        asyncio.gather(*calls.values()), timeout=remaining
                     )
-                results = await asyncio.gather(*calls.values())
-                payloads = dict(zip(calls, results))
-                if "ticker" in payloads:
-                    last = _ticker(payloads["ticker"])["last"]
-                    if last is None:
-                        raise ToolError("HTX ticker did not include a last price")
-                    observations["last_price"] = Decimal(last)
-                if "klines" in payloads:
-                    candles = candles_from_htx(_data(payloads["klines"]))
-                    now_ms = int(time.time() * 1000)
-                    candles = [
-                        candle
-                        for candle in candles
-                        if candle.open_time_ms + period_ms(candle_period) <= now_ms
-                    ]
-                    indicator_values = calculate_indicators(candles, indicator_specs)
-                    for condition in conditions:
-                        if not condition.indicator:
-                            continue
-                        result = indicator_values[condition.indicator]
-                        value = result.get(condition.component)
-                        if value is not None:
-                            observations[
-                                f"{condition.indicator}/{condition.component}"
-                            ] = Decimal(value)
-            except (ToolError, ValueError, InvalidOperation) as exc:
-                warnings.append(f"poll {polls}: {type(exc).__name__}: {exc}")
+                    payloads = dict(zip(calls, results))
+                    if "ticker" in payloads:
+                        last = _ticker(payloads["ticker"])["last"]
+                        if last is None:
+                            raise ToolError("HTX ticker did not include a last price")
+                        observations["last_price"] = Decimal(last)
+                    if "klines" in payloads:
+                        candles = candles_from_htx(_data(payloads["klines"]))
+                        now_ms = int(time.time() * 1000)
+                        candles = [
+                            candle
+                            for candle in candles
+                            if candle.open_time_ms + period_ms(candle_period) <= now_ms
+                        ]
+                        indicator_values = calculate_indicators(
+                            candles, indicator_specs
+                        )
+                        for index, condition in enumerate(conditions):
+                            canonical = condition_indicators.get(index)
+                            if canonical is None:
+                                continue
+                            result = indicator_values[canonical]
+                            value = result.get(condition.component)
+                            if value is not None:
+                                observations[f"{canonical}/{condition.component}"] = (
+                                    Decimal(value)
+                                )
+            except (
+                asyncio.TimeoutError,
+                HtxApiError,
+                ToolError,
+                ValueError,
+                InvalidOperation,
+            ) as exc:
+                if len(warnings) < 10:
+                    warnings.append(f"poll {polls}: {type(exc).__name__}: {exc}")
+                elif len(warnings) == 10:
+                    warnings.append("Additional failed polls are omitted.")
 
-            last_observations = {
-                key: decimal_to_text(value) for key, value in observations.items()
-            }
+            if observations:
+                last_observations = {
+                    key: decimal_to_text(value) for key, value in observations.items()
+                }
             matched_conditions: list[int] = []
             for index, condition in enumerate(conditions):
                 key = (
                     "last_price"
                     if condition.metric == "last_price"
-                    else f"{condition.indicator}/{condition.component}"
+                    else f"{condition_indicators[index]}/{condition.component}"
                 )
                 observed = observations.get(key)
                 if observed is None:

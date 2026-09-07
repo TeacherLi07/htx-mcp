@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.1 - 2026-09-07
+
+- Enforce market-wait deadlines across in-flight HTX requests.
+- Normalize indicator aliases and validate requested indicator components before waiting.
+- Preserve the latest successful observation through transient polling failures.
+
 ## 0.5.0 - 2026-09-07
 
 - Add Decimal-based semantic technical indicators for completed HTX K-lines.

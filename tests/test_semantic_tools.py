@@ -1,4 +1,5 @@
 import asyncio
+import time
 from dataclasses import replace
 from urllib.parse import urlsplit
 
@@ -248,6 +249,89 @@ def test_market_wait_triggers_on_a_declarative_price_condition(monkeypatch):
     assert result.structured_content["polls"] == 1
     assert result.structured_content["matched_conditions"] == [0]
     assert result.structured_content["observations"] == {"last_price": "60000.1"}
+
+
+def test_market_wait_supports_indicator_aliases_and_all_matching(monkeypatch):
+    candles = [
+        {
+            "id": 1_700_000_000 + index * 3_600,
+            "open": str(index + 1),
+            "high": str(index + 2),
+            "low": str(index),
+            "close": str(index + 1),
+            "vol": "10",
+        }
+        for index in range(6)
+    ]
+    _install_router(
+        monkeypatch,
+        {
+            "/market/detail/merged": {"status": "ok", "tick": {"close": "60000"}},
+            "/market/history/kline": {"status": "ok", "data": list(reversed(candles))},
+        },
+    )
+
+    result = asyncio.run(
+        mcp.call_tool(
+            "htx_wait_for_market_event",
+            {
+                "product": "spot",
+                "instrument": "btcusdt",
+                "match": "all",
+                "conditions": [
+                    {
+                        "metric": "last_price",
+                        "operator": "gte",
+                        "value": "60000",
+                    },
+                    {
+                        "metric": "indicator",
+                        "indicator": "ma:3",
+                        "operator": "gte",
+                        "value": "5",
+                    },
+                ],
+            },
+        )
+    )
+
+    assert result.structured_content["status"] == "triggered"
+    assert result.structured_content["matched_conditions"] == [0, 1]
+    assert result.structured_content["observations"] == {
+        "last_price": "60000",
+        "sma:3/value": "5",
+    }
+
+
+def test_market_wait_enforces_its_deadline_while_a_market_call_is_slow(monkeypatch):
+    async def slow_ticker(_symbol):
+        await asyncio.sleep(2)
+        return {"status": "ok", "tick": {"close": "60000"}}
+
+    monkeypatch.setattr(server, "spot_get_ticker", slow_ticker)
+    started = time.perf_counter()
+    result = asyncio.run(
+        mcp.call_tool(
+            "htx_wait_for_market_event",
+            {
+                "product": "spot",
+                "instrument": "btcusdt",
+                "conditions": [
+                    {
+                        "metric": "last_price",
+                        "operator": "gte",
+                        "value": "70000",
+                    }
+                ],
+                "timeout_seconds": 1,
+            },
+        )
+    )
+    elapsed = time.perf_counter() - started
+
+    assert result.structured_content["status"] == "data_unavailable"
+    assert result.structured_content["polls"] == 1
+    assert elapsed < 1.5
 
 
 def test_market_wait_tool_warns_that_it_hides_intermediate_market_updates():
