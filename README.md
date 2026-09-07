@@ -218,7 +218,9 @@ U 本位合约接受 `1` 到 `9223372036854775807` 的整数。合约查询和�
 
 当前 API 映射工具仍完整保留在 `advanced` 工具集中；高层语义工具负责聚合常用工作流：
 
-- `analysis`：`htx_get_market_snapshot`、`htx_get_instrument_rules`、`htx_get_account_snapshot`、`htx_get_risk_snapshot`。
+- `analysis`：`htx_get_market_snapshot`、`htx_get_technical_indicators`、`htx_wait_for_market_event`、`htx_get_instrument_rules`、`htx_get_account_snapshot`、`htx_get_risk_snapshot`。`htx_get_technical_indicators` 只返回模型请求的确定性指标（SMA/EMA、RSI、ATR、成交量均线、布林带、MACD、KDJ），默认排除未收盘 K 线；日常分析不暴露原始 K 线。`htx_wait_for_market_event` 只接受有上限的声明式价格/指标阈值，超时必定返回且不执行写操作。需要研究或排障时，`advanced` 工具集仍提供 `spot_get_klines` 和 `futures_get_klines`。
+
+等待工具在条件满足或超时前不会向 LLM 发送中间市场更新；仅在有意延后分析时使用，并在工具返回后重新获取市场快照。
 - `planning`：`htx_validate_trade_intent`、`htx_preview_trade`、`htx_reconcile_trade`。
 - `execution`：`htx_submit_trade`、`htx_cancel_trade`、`htx_close_position`。
 - `ops`：诊断工具。

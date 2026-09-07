@@ -117,6 +117,181 @@ def test_swap_market_snapshot_matches_low_level_market_tools(monkeypatch):
     assert data["price_limit"] == low_limit.structured_content["data"]
 
 
+def test_technical_indicators_are_decimal_calculated_from_completed_candles(
+    monkeypatch,
+):
+    candles = [
+        {
+            "id": 1_700_000_000 + index * 3_600,
+            "open": str(index + 1),
+            "high": str(index + 2),
+            "low": str(index),
+            "close": str(index + 1),
+            "vol": str((index + 1) * 10),
+        }
+        for index in range(6)
+    ]
+    _install_router(
+        monkeypatch,
+        {"/market/history/kline": {"status": "ok", "data": list(reversed(candles))}},
+    )
+
+    result = asyncio.run(
+        mcp.call_tool(
+            "htx_get_technical_indicators",
+            {
+                "product": "spot",
+                "instrument": "btcusdt",
+                "period": "60min",
+                "candle_size": 6,
+                "indicators": [
+                    "ma:3",
+                    "ema:3",
+                    "rsi:3",
+                    "atr:3",
+                    "volume_sma:3",
+                    "bbands:3,2",
+                    "macd:2,3,2",
+                    "kdj:3,1,1",
+                ],
+            },
+        )
+    )
+
+    assert result.is_error is False
+    data = result.structured_content
+    assert data["completed_candles"] == 6
+    assert data["omitted_incomplete_candles"] == 0
+    assert data["indicators"]["sma:3"]["value"] == "5"
+    assert data["indicators"]["ema:3"]["value"] == "5"
+    assert data["indicators"]["rsi:3"]["value"] == "100"
+    assert data["indicators"]["atr:3"]["value"] == "2"
+    assert data["indicators"]["volume_sma:3"]["value"] == "50"
+    assert data["indicators"]["bbands:3,2"]["middle"] == "5"
+    assert set(data["indicators"]["macd:2,3,2"]) == {
+        "macd",
+        "signal",
+        "histogram",
+    }
+    assert set(data["indicators"]["kdj:3,1,1"]) == {"k", "d", "j"}
+
+
+def test_technical_indicators_report_insufficient_data_without_failing(monkeypatch):
+    _install_router(
+        monkeypatch,
+        {
+            "/linear-swap-ex/market/history/kline": {
+                "status": "ok",
+                "data": [
+                    {
+                        "id": 1_700_000_000,
+                        "open": "1",
+                        "high": "2",
+                        "low": "0",
+                        "close": "1",
+                        "vol": "10",
+                    }
+                ],
+            }
+        },
+    )
+
+    data = asyncio.run(
+        mcp.call_tool(
+            "htx_get_technical_indicators",
+            {
+                "product": "swap",
+                "instrument": "BTC-USDT",
+                "indicators": ["rsi:14"],
+            },
+        )
+    ).structured_content
+
+    assert data["indicators"]["rsi:14"] == {
+        "status": "insufficient_data",
+        "required_candles": 15,
+        "available_candles": 1,
+    }
+
+
+def test_market_wait_triggers_on_a_declarative_price_condition(monkeypatch):
+    _install_router(
+        monkeypatch,
+        {
+            "/linear-swap-ex/market/detail/merged": {
+                "status": "ok",
+                "tick": {"close": "60000.1"},
+            }
+        },
+    )
+
+    result = asyncio.run(
+        mcp.call_tool(
+            "htx_wait_for_market_event",
+            {
+                "product": "swap",
+                "instrument": "BTC-USDT",
+                "conditions": [
+                    {
+                        "metric": "last_price",
+                        "operator": "gte",
+                        "value": "60000",
+                    }
+                ],
+                "timeout_seconds": 30,
+            },
+        )
+    )
+
+    assert result.is_error is False
+    assert result.structured_content["status"] == "triggered"
+    assert result.structured_content["polls"] == 1
+    assert result.structured_content["matched_conditions"] == [0]
+    assert result.structured_content["observations"] == {"last_price": "60000.1"}
+
+
+def test_market_wait_tool_warns_that_it_hides_intermediate_market_updates():
+    tools = asyncio.run(mcp.list_tools())
+    wait_tool = next(tool for tool in tools if tool.name == "htx_wait_for_market_event")
+
+    assert "no intermediate\nmarket updates" in wait_tool.description
+    assert "then re-check market snapshots after every return" in wait_tool.description
+
+
+def test_market_wait_returns_timeout_without_a_matching_condition(monkeypatch):
+    _install_router(
+        monkeypatch,
+        {
+            "/market/detail/merged": {
+                "status": "ok",
+                "tick": {"close": "60000.1"},
+            }
+        },
+    )
+    result = asyncio.run(
+        mcp.call_tool(
+            "htx_wait_for_market_event",
+            {
+                "product": "spot",
+                "instrument": "btcusdt",
+                "conditions": [
+                    {
+                        "metric": "last_price",
+                        "operator": "gte",
+                        "value": "70000",
+                    }
+                ],
+                "timeout_seconds": 1,
+                "poll_interval_seconds": 1,
+            },
+        )
+    )
+
+    assert result.structured_content["status"] == "timed_out"
+    assert result.structured_content["polls"] == 2
+    assert result.structured_content["matched_conditions"] == []
+
+
 def test_swap_market_snapshot_includes_contract_rules_when_requested(monkeypatch):
     contract = {
         "contract_code": "BTC-USDT",

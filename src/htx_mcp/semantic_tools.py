@@ -17,8 +17,9 @@ from types import ModuleType
 from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver.exceptions import ToolError
-from pydantic import Field
+from pydantic import BaseModel, Field, model_validator
 
+from .indicators import calculate_indicators, candles_from_htx, period_ms
 from .models import (
     AccountSnapshotResult,
     Confirm,
@@ -28,9 +29,11 @@ from .models import (
     InstrumentRulesResult,
     MarginMode,
     MarketSnapshotResult,
+    MarketWaitResult,
     ReconcileTradeResult,
     RiskSnapshotResult,
     SnapshotField,
+    TechnicalIndicatorsResult,
     TradeIntent,
     TradePlanResult,
     TradePreviewResult,
@@ -55,6 +58,28 @@ Profile = Annotated[
         description="Snapshot size: minimal ticker, analysis context, or execution context."
     ),
 ]
+
+
+class MarketWaitCondition(BaseModel):
+    """One declarative, read-only condition evaluated by the market wait tool."""
+
+    metric: Literal["last_price", "indicator"]
+    operator: Literal["gte", "lte"]
+    value: Decimal
+    indicator: str | None = None
+    component: str = "value"
+
+    @model_validator(mode="after")
+    def validate_indicator(self) -> MarketWaitCondition:
+        if self.metric == "indicator" and not self.indicator:
+            raise ValueError("indicator is required when metric is 'indicator'")
+        if self.metric == "last_price" and self.indicator is not None:
+            raise ValueError("indicator is only valid when metric is 'indicator'")
+        if self.value <= 0 and self.metric == "last_price":
+            raise ValueError("last_price threshold must be positive")
+        return self
+
+
 IncludeRaw = Annotated[
     bool,
     Field(
@@ -255,14 +280,13 @@ def _market_fields(product: str, profile: str, include: list[str] | None) -> set
         {
             "ticker",
             "depth",
-            "klines",
             "index",
             "funding",
             "open_interest",
             "price_limit",
         }
         if product == "swap"
-        else {"ticker", "depth", "klines"}
+        else {"ticker", "depth"}
     )
 
 
@@ -705,28 +729,261 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                 description="Optional fields to include; omit to use the selected profile."
             ),
         ] = None,
-        period: Annotated[
-            str,
-            Field(
-                description="Candle period when klines are included, for example '1hour'."
-            ),
-        ] = "1hour",
-        candle_size: Annotated[
-            int,
-            Field(
-                ge=1, le=2000, description="Number of candles when klines are included."
-            ),
-        ] = 100,
         include_raw: IncludeRaw = False,
     ) -> MarketSnapshotResult:
         """Return one compact, concurrently collected market snapshot for analysis or execution.
 
-        Prefer this aggregate over several low-level market calls.
+        Prefer this aggregate over several low-level market calls. For technical
+        analysis, call htx_get_technical_indicators instead of requesting raw K-lines.
         """
 
         return await fetch_market(
-            product, instrument, profile, include, period, candle_size, include_raw
+            product, instrument, profile, include, "1hour", 100, include_raw
         )
+
+    @mcp.tool(annotations=api.READ, toolsets={"analysis"})
+    async def htx_get_technical_indicators(
+        product: Product,
+        instrument: Instrument,
+        indicators: Annotated[
+            list[str],
+            Field(
+                min_length=1,
+                description="Indicators to calculate. Use sma:N (or ma:N), ema:N, rsi:N, atr:N, volume_sma:N, bbands:N,multiplier, macd:fast,slow,signal, or kdj:N,k_smoothing,d_smoothing. Example: ['sma:20', 'sma:60', 'rsi:14', 'macd:12,26,9']. Values are calculated deterministically from completed HTX candles.",
+            ),
+        ],
+        period: Annotated[
+            str,
+            Field(
+                description="HTX candle interval: 1min, 5min, 15min, 30min, 60min, 4hour, 1day, 1week, or 1mon."
+            ),
+        ] = "60min",
+        candle_size: Annotated[
+            int,
+            Field(
+                ge=1,
+                le=2000,
+                description="Maximum HTX candles to fetch. It must cover the largest requested indicator lookback; 300 is suitable for most standard indicators.",
+            ),
+        ] = 300,
+        include_current_candle: Annotated[
+            bool,
+            Field(
+                description="Include the still-forming candle when true. Defaults to false so decisions use only completed candles and do not repaint.",
+            ),
+        ] = False,
+    ) -> TechnicalIndicatorsResult:
+        """Return only the requested, Decimal-calculated technical indicators.
+
+        The model chooses which named indicators to inspect; it never calculates
+        them itself. Raw K-lines remain available solely through the opt-in
+        advanced compatibility toolset for research and diagnostics.
+        """
+
+        code = (
+            api._symbol(instrument) if product == "spot" else api._contract(instrument)
+        )
+        interval_ms = period_ms(period)
+        payload = (
+            await api.spot_get_klines(code, period=period, size=candle_size)
+            if product == "spot"
+            else await api.futures_get_klines(code, period=period, size=candle_size)
+        )
+        candles = candles_from_htx(_data(payload))
+        omitted = 0
+        if not include_current_candle:
+            now_ms = int(time.time() * 1000)
+            completed = [
+                candle
+                for candle in candles
+                if candle.open_time_ms + interval_ms <= now_ms
+            ]
+            omitted = len(candles) - len(completed)
+            candles = completed
+        return {
+            "product": product,
+            "instrument": code,
+            "period": period,
+            "as_of_ms": int(time.time() * 1000),
+            "completed_candles": len(candles),
+            "omitted_incomplete_candles": omitted,
+            "latest_completed_open_ms": candles[-1].open_time_ms if candles else None,
+            "indicators": calculate_indicators(candles, indicators),
+        }
+
+    @mcp.tool(annotations=api.READ, toolsets={"analysis"})
+    async def htx_wait_for_market_event(
+        product: Product,
+        instrument: Instrument,
+        conditions: Annotated[
+            list[MarketWaitCondition],
+            Field(
+                min_length=1,
+                max_length=8,
+                description="Declarative conditions to wait for. A condition checks last_price or a supported technical indicator (for example indicator='rsi:14' or 'macd:12,26,9' with component='histogram'). Arbitrary code and expressions are not accepted.",
+            ),
+        ],
+        match: Annotated[
+            Literal["any", "all"],
+            Field(
+                description="Wake when any condition matches, or only when all match."
+            ),
+        ] = "any",
+        candle_period: Annotated[
+            str,
+            Field(
+                description="HTX candle interval used for indicator conditions: 1min, 5min, 15min, 30min, 60min, 4hour, 1day, 1week, or 1mon."
+            ),
+        ] = "60min",
+        candle_size: Annotated[
+            int,
+            Field(
+                ge=1,
+                le=2000,
+                description="Maximum candles fetched for indicator conditions. It must cover every requested indicator lookback.",
+            ),
+        ] = 300,
+        timeout_seconds: Annotated[
+            int,
+            Field(
+                ge=1,
+                le=300,
+                description="Hard maximum blocking duration. The tool always returns by this deadline; it cannot wait indefinitely.",
+            ),
+        ] = 60,
+        poll_interval_seconds: Annotated[
+            int,
+            Field(
+                ge=1,
+                le=60,
+                description="Minimum seconds between read-only market polls. A larger interval reduces API use but increases wake latency.",
+            ),
+        ] = 5,
+    ) -> MarketWaitResult:
+        """Block until bounded declarative market conditions match or the timeout expires.
+
+        This safe MCP wait primitive performs read-only calls, executes no
+        caller-supplied code, has a fixed deadline, and returns compact evidence.
+        A future WebSocket market daemon can satisfy the identical contract.
+
+        Important: while this call is pending, the agent receives no intermediate
+        market updates and cannot react to them. Use it only when deferring
+        analysis is intentional, then re-check market snapshots after every return.
+        """
+
+        period_ms(candle_period)
+        code = (
+            api._symbol(instrument) if product == "spot" else api._contract(instrument)
+        )
+        need_ticker = any(condition.metric == "last_price" for condition in conditions)
+        indicator_specs = sorted(
+            {condition.indicator for condition in conditions if condition.indicator}
+        )
+        started_monotonic = time.monotonic()
+        started_at_ms = int(time.time() * 1000)
+        deadline = started_monotonic + timeout_seconds
+        polls = 0
+        warnings: list[str] = []
+        last_observations: dict[str, str | None] = {}
+
+        while True:
+            polls += 1
+            observations: dict[str, Decimal] = {}
+            try:
+                calls: dict[str, Any] = {}
+                if need_ticker:
+                    calls["ticker"] = (
+                        api.spot_get_ticker(code)
+                        if product == "spot"
+                        else api.futures_get_ticker(code)
+                    )
+                if indicator_specs:
+                    calls["klines"] = (
+                        api.spot_get_klines(
+                            code, period=candle_period, size=candle_size
+                        )
+                        if product == "spot"
+                        else api.futures_get_klines(
+                            code, period=candle_period, size=candle_size
+                        )
+                    )
+                results = await asyncio.gather(*calls.values())
+                payloads = dict(zip(calls, results))
+                if "ticker" in payloads:
+                    last = _ticker(payloads["ticker"])["last"]
+                    if last is None:
+                        raise ToolError("HTX ticker did not include a last price")
+                    observations["last_price"] = Decimal(last)
+                if "klines" in payloads:
+                    candles = candles_from_htx(_data(payloads["klines"]))
+                    now_ms = int(time.time() * 1000)
+                    candles = [
+                        candle
+                        for candle in candles
+                        if candle.open_time_ms + period_ms(candle_period) <= now_ms
+                    ]
+                    indicator_values = calculate_indicators(candles, indicator_specs)
+                    for condition in conditions:
+                        if not condition.indicator:
+                            continue
+                        result = indicator_values[condition.indicator]
+                        value = result.get(condition.component)
+                        if value is not None:
+                            observations[
+                                f"{condition.indicator}/{condition.component}"
+                            ] = Decimal(value)
+            except (ToolError, ValueError, InvalidOperation) as exc:
+                warnings.append(f"poll {polls}: {type(exc).__name__}: {exc}")
+
+            last_observations = {
+                key: decimal_to_text(value) for key, value in observations.items()
+            }
+            matched_conditions: list[int] = []
+            for index, condition in enumerate(conditions):
+                key = (
+                    "last_price"
+                    if condition.metric == "last_price"
+                    else f"{condition.indicator}/{condition.component}"
+                )
+                observed = observations.get(key)
+                if observed is None:
+                    continue
+                matched = (
+                    observed >= condition.value
+                    if condition.operator == "gte"
+                    else observed <= condition.value
+                )
+                if matched:
+                    matched_conditions.append(index)
+            is_triggered = (
+                bool(matched_conditions)
+                if match == "any"
+                else len(matched_conditions) == len(conditions)
+            )
+            now_monotonic = time.monotonic()
+            if is_triggered or now_monotonic >= deadline:
+                status: Literal["triggered", "timed_out", "data_unavailable"]
+                if is_triggered:
+                    status = "triggered"
+                elif not last_observations:
+                    status = "data_unavailable"
+                else:
+                    status = "timed_out"
+                finished_at_ms = int(time.time() * 1000)
+                return {
+                    "status": status,
+                    "product": product,
+                    "instrument": code,
+                    "match": match,
+                    "started_at_ms": started_at_ms,
+                    "finished_at_ms": finished_at_ms,
+                    "elapsed_ms": round((now_monotonic - started_monotonic) * 1000),
+                    "polls": polls,
+                    "observations": last_observations,
+                    "matched_conditions": matched_conditions,
+                    "warnings": warnings,
+                }
+            await asyncio.sleep(min(poll_interval_seconds, deadline - now_monotonic))
 
     @mcp.tool(annotations=api.READ, toolsets={"analysis"})
     async def htx_get_instrument_rules(

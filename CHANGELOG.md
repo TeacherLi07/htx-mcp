@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0 - 2026-09-07
+
+- Add Decimal-based semantic technical indicators for completed HTX K-lines.
+- Keep raw K-lines in the opt-in advanced toolset and expose compact indicator results in analysis.
+- Add a bounded, read-only declarative market wait tool for price and indicator thresholds.
+
 ## 0.4.0 - 2026-09-07
 
 - Store process and MCP tool-call logs in `~/.htxmcp/htx-mcp.log` instead of stderr.

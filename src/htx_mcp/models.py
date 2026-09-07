@@ -26,7 +26,6 @@ DecimalPrice = Annotated[
 SnapshotField = Literal[
     "ticker",
     "depth",
-    "klines",
     "index",
     "funding",
     "open_interest",
@@ -59,6 +58,31 @@ class MarketSnapshotResult(TypedDict):
     data: dict[str, Any]
     warnings: list[str]
     raw: NotRequired[dict[str, Any]]
+
+
+class TechnicalIndicatorsResult(TypedDict):
+    product: Literal["spot", "swap"]
+    instrument: str
+    period: str
+    as_of_ms: int
+    completed_candles: int
+    omitted_incomplete_candles: int
+    latest_completed_open_ms: int | None
+    indicators: dict[str, dict[str, Any]]
+
+
+class MarketWaitResult(TypedDict):
+    status: Literal["triggered", "timed_out", "data_unavailable"]
+    product: Literal["spot", "swap"]
+    instrument: str
+    match: Literal["any", "all"]
+    started_at_ms: int
+    finished_at_ms: int
+    elapsed_ms: int
+    polls: int
+    observations: dict[str, str | None]
+    matched_conditions: list[int]
+    warnings: list[str]
 
 
 class InstrumentRulesResult(TypedDict):
