@@ -453,6 +453,28 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             await collect(calls)
         else:
             code = api._contract(instrument) if instrument else None
+            if margin_mode == "cross":
+                try:
+                    account_type = await api.futures_get_account_type()
+                    account_type_data = _data(account_type)
+                    result["account_type"] = account_type_data
+                    if (
+                        isinstance(account_type_data, dict)
+                        and account_type_data.get("account_type") == 2
+                    ):
+                        result["warnings"].append(
+                            "HTX unified USDT account detected: legacy cross-margin "
+                            "account, position, and order endpoints are unavailable. "
+                            "This MCP server does not change account types."
+                        )
+                        if include_raw:
+                            raw["account_type"] = account_type
+                            result["raw"] = raw
+                        return result
+                except api.HtxError as exc:
+                    result["warnings"].append(
+                        f"account_type: {type(exc).__name__}: {exc}"
+                    )
             calls = {}
             if "balances" in fields:
                 calls["balances"] = api.futures_get_account_info(margin_mode, code)

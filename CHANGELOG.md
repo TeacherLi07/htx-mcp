@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.3 - 2026-09-07
+
+- Detect HTX USDT-swap unified accounts before querying legacy cross-margin account endpoints.
+- Add a read-only account-type tool and return an explicit account-snapshot diagnosis when unified accounts prevent legacy API access.
+
 ## 0.5.2 - 2026-09-07
 
 - Return partial account snapshots with field-level warnings when an independent private endpoint fails.

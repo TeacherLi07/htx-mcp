@@ -14,6 +14,18 @@ from . import server
 
 
 @server.mcp.tool(annotations=server.READ)
+async def futures_get_account_type() -> dict[str, Any]:
+    """Read the HTX USDT-swap account type.
+
+    HTX returns account_type 1 for separate cross/isolated accounts and 2 for a
+    unified account. Unified accounts do not support the legacy cross-margin
+    account, position, or order endpoints.
+    """
+
+    return await server._private_get("/linear-swap-api/v3/swap_unified_account_type")
+
+
+@server.mcp.tool(annotations=server.READ)
 async def futures_get_account_info(
     margin_mode: server.MarginMode = "isolated",
     contract_code: server.ContractCode | None = None,
@@ -342,6 +354,7 @@ async def futures_get_financial_records(
 __all__ = [
     "futures_get_account_info",
     "futures_get_account_position_info",
+    "futures_get_account_type",
     "futures_get_available_leverage",
     "futures_get_financial_records",
     "futures_get_history_orders",

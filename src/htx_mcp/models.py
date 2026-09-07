@@ -100,6 +100,7 @@ class AccountSnapshotResult(TypedDict):
     as_of_ms: int
     warnings: list[str]
     account_id: NotRequired[str]
+    account_type: NotRequired[Any]
     balances: NotRequired[Any]
     positions: NotRequired[Any]
     open_orders: NotRequired[Any]

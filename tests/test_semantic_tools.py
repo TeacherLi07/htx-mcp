@@ -519,6 +519,7 @@ def test_account_snapshot_returns_partial_data_when_private_sections_fail(monkey
     _install_router(
         monkeypatch,
         {
+            "/linear-swap-api/v3/swap_unified_account_type": _ok({"account_type": 1}),
             "/linear-swap-api/v1/swap_cross_account_info": _ok(balances),
             "/linear-swap-api/v1/swap_cross_position_info": {
                 "status": "error",
@@ -556,6 +557,32 @@ def test_account_snapshot_returns_partial_data_when_private_sections_fail(monkey
         "api_status: HtxApiError: HTX API error: status service temporarily unavailable",
     ]
     assert result["raw"] == {"balances": _ok(balances), "open_orders": _ok(orders)}
+
+
+def test_cross_account_snapshot_explains_unified_account_limit(monkeypatch):
+    _install_router(
+        monkeypatch,
+        {"/linear-swap-api/v3/swap_unified_account_type": _ok({"account_type": 2})},
+    )
+
+    snapshot = asyncio.run(
+        mcp.call_tool(
+            "htx_get_account_snapshot",
+            {"product": "swap", "margin_mode": "cross", "include_raw": True},
+        )
+    )
+
+    assert snapshot.is_error is False
+    result = snapshot.structured_content
+    assert result["account_type"] == {"account_type": 2}
+    assert result["warnings"] == [
+        (
+            "HTX unified USDT account detected: legacy cross-margin account, "
+            "position, and order endpoints are unavailable. This MCP server does not "
+            "change account types."
+        )
+    ]
+    assert result["raw"] == {"account_type": _ok({"account_type": 2})}
 
 
 def test_trade_validation_blocks_when_rules_or_ticker_are_unavailable(monkeypatch):
