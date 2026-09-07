@@ -160,6 +160,61 @@ class ReconcileTradeResult(TypedDict):
     order: Any
 
 
+class SpotMarginAction(BaseModel):
+    """A bounded funding action for an HTX spot-margin account."""
+
+    model_config = {"extra": "forbid"}
+
+    action: Literal["transfer_in", "transfer_out", "borrow", "repay"] = Field(
+        description="Funding action: transfer into/out of margin, borrow, or repay one loan."
+    )
+    margin_mode: Literal["isolated", "cross"] = Field(
+        description="Spot-margin mode: isolated per symbol or cross across currencies."
+    )
+    currency: str = Field(
+        min_length=1, description="Currency code, such as btc or usdt."
+    )
+    amount: DecimalAmount = Field(
+        description="Exact positive funding amount; HTX spot-margin endpoints allow up to 3 decimal places."
+    )
+    instrument: str | None = Field(
+        default=None,
+        description="Required isolated-margin symbol, such as btcusdt; omit for cross margin.",
+    )
+    loan_order_id: str | None = Field(
+        default=None,
+        description="Required only for repay: the margin loan order ID to settle.",
+    )
+
+    @model_validator(mode="after")
+    def validate_shape(self) -> SpotMarginAction:
+        if self.margin_mode == "isolated" and not self.instrument:
+            raise ValueError("instrument is required for isolated spot margin")
+        if self.margin_mode == "cross" and self.instrument is not None:
+            raise ValueError("instrument must be omitted for cross spot margin")
+        if self.action == "repay" and not self.loan_order_id:
+            raise ValueError("loan_order_id is required for repay")
+        if self.action != "repay" and self.loan_order_id is not None:
+            raise ValueError("loan_order_id is only valid for repay")
+        if -self.amount.as_tuple().exponent > 3:
+            raise ValueError("spot-margin amount supports at most 3 decimal places")
+        return self
+
+
+class SpotMarginPlanResult(TypedDict):
+    status: Literal["ready", "blocked"]
+    action: Literal["transfer_in", "transfer_out", "borrow", "repay"]
+    margin_mode: Literal["isolated", "cross"]
+    request: dict[str, Any]
+    checks: list[ValidationCheck]
+    warnings: list[str]
+
+
+class SpotMarginExecutionResult(TypedDict):
+    plan: SpotMarginPlanResult
+    execution: ExecutionResult
+
+
 class ProtectionSpec(BaseModel):
     """Exchange-side protection expressed with exact decimal values."""
 

@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote, urlsplit
 
 import httpx
@@ -97,6 +97,7 @@ class HtxConfig:
     enable_trading: bool = False
     enable_swap_trading: bool = True
     spot_account_id: str | None = None
+    swap_api_version: Literal["v5", "legacy"] = "v5"
 
     @classmethod
     def from_env(cls) -> HtxConfig:
@@ -105,6 +106,9 @@ class HtxConfig:
             timeout = max(1.0, float(timeout_raw))
         except ValueError as exc:
             raise HtxConfigurationError("HTX_TIMEOUT_SECONDS must be a number") from exc
+        swap_api_version = (os.getenv("HTX_SWAP_API_VERSION") or "v5").strip().lower()
+        if swap_api_version not in {"v5", "legacy"}:
+            raise HtxConfigurationError("HTX_SWAP_API_VERSION must be v5 or legacy")
         return cls(
             api_key=_env_optional("HTX_API_KEY"),
             api_secret=_env_optional("HTX_API_SECRET"),
@@ -118,6 +122,7 @@ class HtxConfig:
             enable_trading=_truthy(os.getenv("HTX_ENABLE_TRADING")),
             enable_swap_trading=_truthy(os.getenv("HTX_ENABLE_SWAP_TRADING", "true")),
             spot_account_id=_env_optional("HTX_SPOT_ACCOUNT_ID"),
+            swap_api_version=swap_api_version,
         )
 
 

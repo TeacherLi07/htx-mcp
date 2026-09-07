@@ -44,6 +44,7 @@ uv run pytest -q
 | `HTX_API_SECRET` | 空 | HTX Secret Key；仅用于本地签名 |
 | `HTX_API_BASE_URL` | `https://api.huobi.pro` | 现货 API Host |
 | `HTX_FUTURES_API_BASE_URL` | `https://api.hbdm.com` | USDT 本位合约 API Host |
+| `HTX_SWAP_API_VERSION` | `v5` | 语义化 U 本位账户、仓位和订单工具使用的接口版本；仅未迁移账户使用 `legacy` |
 | `HTX_SPOT_ACCOUNT_ID` | 空 | 可选默认现货账户 ID；留空时自动解析唯一 working spot 账户 |
 | `HTX_TIMEOUT_SECONDS` | `20` | 单次 HTTP 请求超时 |
 | `HTX_ENABLE_TRADING` | `false` | 是否允许写接口真正发往 HTX；`false` 时所有写工具只返回 dry-run |
@@ -59,6 +60,12 @@ uv run pytest -q
 现货与合约使用独立 Host。除非部署环境明确要求其他官方域名，否则保持默认值。
 API 密钥建议只授予 Read；只有确实需要交易时才授予 Trade，并绑定 IP。Secret
 不会写入 MCP 响应或日志。
+
+`v5` 是默认的 U 本位多资产保证金路径：语义工具会使用 `/v5/account/*`、
+`/v5/trade/*` 和 `/v5/position/*`。旧的 `/linear-swap-api/v1`、`v3` 映射仍在
+`advanced` 工具集中供未迁移账户排障；不要把 v5 的 `margin_mode`、`type`、
+`time_in_force` 字段与旧版 `direction`、`offset`、`order_price_type` 混用。v5 杠杆是
+独立写操作，先调用 `futures_v5_set_leverage`，再提交订单。
 
 HTTPX 默认读取进程的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 和 `NO_PROXY`。
 若代理端口同时提供 HTTP 与 SOCKS5，优先使用 `http://127.0.0.1:7897`；HTTPS
@@ -214,6 +221,12 @@ HTX_ENABLE_TRADING = "false"
 - `spot_place_order`、`spot_cancel_*`、`spot_dead_man_switch`：现货下单、撤单和断线保护。
 - htx_diagnose_private_access：安全诊断现货与合约私有 API 的认证、权限和 Host 配置。
 
+### 现货杠杆
+
+- `spot_margin_get_account`、`spot_margin_get_loan_info`、`spot_margin_get_loan_orders`：逐仓或全仓的账户风险、借币利率/额度和借币记录；这些原始兼容接口位于 `advanced` 工具集。
+- `spot_margin_transfer`、`spot_margin_borrow`、`spot_margin_repay`：划转、借币和按借币单 ID 还款。`spot_margin_place_order` 使用从杠杆账户查询结果取得的显式账户 ID，并自动选择 `margin-api`（逐仓）或 `super-margin-api`（全仓）；逐仓必须传 `symbol`，全仓必须省略它；资金接口金额以最多三位小数的固定点字符串传入。
+- 日常使用高层工作流：先调用 `htx_get_spot_margin_snapshot`，再用 `htx_plan_spot_margin_action` 检查实时借币额度和规范化请求，最后才用 `htx_execute_spot_margin_action` 及显式 `confirm=true` 执行。借币、还款与资金划转均不会隐式发生在现货下单中。
+
 ### USDT 本位合约
 
 - `futures_get_contracts`、`futures_get_ticker`、`futures_get_tickers`、
@@ -259,11 +272,11 @@ U 本位合约接受 `1` 到 `9223372036854775807` 的整数。合约查询和�
 
 当前 API 映射工具仍完整保留在 `advanced` 工具集中；高层语义工具负责聚合常用工作流：
 
-- `analysis`：`htx_get_market_snapshot`、`htx_get_technical_indicators`、`htx_wait_for_market_event`、`htx_get_instrument_rules`、`htx_get_account_snapshot`、`htx_get_risk_snapshot`。`htx_get_technical_indicators` 只返回模型请求的确定性指标（SMA/EMA、RSI、ATR、成交量均线、布林带、MACD、KDJ），默认排除未收盘 K 线；日常分析不暴露原始 K 线。`htx_wait_for_market_event` 只接受有上限的声明式价格/指标阈值，超时必定返回且不执行写操作。需要研究或排障时，`advanced` 工具集仍提供 `spot_get_klines` 和 `futures_get_klines`。
+- `analysis`：`htx_get_market_snapshot`、`htx_get_technical_indicators`、`htx_wait_for_market_event`、`htx_get_instrument_rules`、`htx_get_account_snapshot`、`htx_get_risk_snapshot`、`htx_get_spot_margin_snapshot`。`htx_get_technical_indicators` 只返回模型请求的确定性指标（SMA/EMA、RSI、ATR、成交量均线、布林带、MACD、KDJ），默认排除未收盘 K 线；日常分析不暴露原始 K 线。`htx_wait_for_market_event` 只接受有上限的声明式价格/指标阈值，超时必定返回且不执行写操作。需要研究或排障时，`advanced` 工具集仍提供 `spot_get_klines` 和 `futures_get_klines`。
 
 等待工具在条件满足或超时前不会向 LLM 发送中间市场更新；仅在有意延后分析时使用，并在工具返回后重新获取市场快照。
-- `planning`：`htx_validate_trade_intent`、`htx_preview_trade`、`htx_reconcile_trade`。
-- `execution`：`htx_submit_trade`、`htx_cancel_trade`、`htx_close_position`。
+- `planning`：`htx_validate_trade_intent`、`htx_preview_trade`、`htx_reconcile_trade`、`htx_plan_spot_margin_action`。
+- `execution`：`htx_submit_trade`、`htx_cancel_trade`、`htx_close_position`、`htx_execute_spot_margin_action`。
 - `ops`：诊断工具。
 
 生产环境可只暴露分析和规划工具：

@@ -40,6 +40,9 @@ from .models import (
     ReconcileTradeResult,
     RiskSnapshotResult,
     SnapshotField,
+    SpotMarginAction,
+    SpotMarginExecutionResult,
+    SpotMarginPlanResult,
     TechnicalIndicatorsResult,
     TradeIntent,
     TradePlanResult,
@@ -453,7 +456,8 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             await collect(calls)
         else:
             code = api._contract(instrument) if instrument else None
-            if margin_mode == "cross":
+            using_v5 = api.client.config.swap_api_version == "v5"
+            if margin_mode == "cross" and not using_v5:
                 try:
                     account_type = await api.futures_get_account_type()
                     account_type_data = _data(account_type)
@@ -477,17 +481,33 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                     )
             calls = {}
             if "balances" in fields:
-                calls["balances"] = api.futures_get_account_info(margin_mode, code)
+                calls["balances"] = (
+                    api.v5_get_account_balance()
+                    if using_v5
+                    else api.futures_get_account_info(margin_mode, code)
+                )
             if "positions" in fields:
-                calls["positions"] = api.futures_get_positions(margin_mode, code)
+                calls["positions"] = (
+                    api.v5_get_positions(code)
+                    if using_v5
+                    else api.futures_get_positions(margin_mode, code)
+                )
             if "open_orders" in fields and code:
-                calls["open_orders"] = api.futures_get_open_orders(code, margin_mode)
+                calls["open_orders"] = (
+                    api.v5_get_open_orders(code, margin_mode)
+                    if using_v5
+                    else api.futures_get_open_orders(code, margin_mode)
+                )
             elif "open_orders" in fields:
                 result["warnings"].append(
                     "open_orders: instrument is required for swap account snapshots"
                 )
-            if "api_status" in fields:
+            if "api_status" in fields and not using_v5:
                 calls["api_status"] = api.futures_get_api_trading_status()
+            elif "api_status" in fields:
+                result["warnings"].append(
+                    "api_status: no v5 equivalent; use account and order responses for v5 state."
+                )
             await collect(calls)
         if include_raw:
             result["raw"] = raw
@@ -544,6 +564,47 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                 }
             )
         contract = api._contract(intent.instrument)
+        if api.client.config.swap_api_version == "v5":
+            order_type = {
+                "market": "market",
+                "limit": "limit",
+                "post_only": "post_only",
+                "ioc": "limit",
+                "fok": "limit",
+            }[intent.order_kind]
+            return api._q(
+                contract_code=contract,
+                margin_mode=intent.margin_mode,
+                side=intent.side,
+                type=order_type,
+                volume=decimal_to_text(intent.quantity),
+                price=(
+                    decimal_to_text(intent.price)
+                    if intent.order_kind != "market" and intent.price is not None
+                    else None
+                ),
+                time_in_force={"ioc": "ioc", "fok": "fok"}.get(intent.order_kind),
+                reduce_only=1 if intent.reduce_only or intent.action != "open" else 0,
+                client_order_id=str(intent.client_order_id)
+                if intent.client_order_id is not None
+                else None,
+                tp_trigger_price=decimal_to_text(intent.take_profit.trigger_price)
+                if intent.take_profit
+                else None,
+                tp_order_price=decimal_to_text(intent.take_profit.order_price)
+                if intent.take_profit and intent.take_profit.order_price
+                else None,
+                tp_type=intent.take_profit.order_price_type
+                if intent.take_profit
+                else None,
+                sl_trigger_price=decimal_to_text(intent.stop_loss.trigger_price)
+                if intent.stop_loss
+                else None,
+                sl_order_price=decimal_to_text(intent.stop_loss.order_price)
+                if intent.stop_loss and intent.stop_loss.order_price
+                else None,
+                sl_type=intent.stop_loss.order_price_type if intent.stop_loss else None,
+            )
         body = api._q(
             contract_code=contract,
             volume=decimal_to_text(intent.quantity),
@@ -735,6 +796,16 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             intent.price if intent.order_kind != "market" else reference
         ) or reference
         if intent.product == "swap" and entry is not None:
+            if (
+                intent.leverage is not None
+                and api.client.config.swap_api_version == "v5"
+            ):
+                _check(
+                    checks,
+                    "warning",
+                    "v5_leverage_separate",
+                    "V5 sets leverage through futures_v5_set_leverage before submitting an order.",
+                )
             if intent.take_profit:
                 valid = (
                     intent.take_profit.trigger_price > entry
@@ -1153,6 +1224,189 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             "warnings": warnings,
         }
 
+    async def plan_spot_margin_action(action: SpotMarginAction) -> SpotMarginPlanResult:
+        """Normalize a margin funding action and preflight borrow capacity."""
+
+        instrument = (
+            api._symbol(action.instrument) if action.instrument is not None else None
+        )
+        currency = api._text(action.currency, "currency").lower()
+        amount = decimal_to_text(action.amount)
+        checks: list[dict[str, str]] = []
+        warnings: list[str] = []
+        stem = "margin" if action.margin_mode == "isolated" else "cross-margin"
+        if action.action in {"transfer_in", "transfer_out"}:
+            direction = "in" if action.action == "transfer_in" else "out"
+            path = (
+                f"/v1/dw/transfer-{direction}/margin"
+                if action.margin_mode == "isolated"
+                else f"/v1/{stem}/transfer-{direction}"
+            )
+            body = api._q(symbol=instrument, currency=currency, amount=amount)
+        elif action.action == "borrow":
+            path = f"/v1/{stem}/orders"
+            body = api._q(symbol=instrument, currency=currency, amount=amount)
+            try:
+                loan_info = await api.spot_margin_get_loan_info(
+                    action.margin_mode, instrument
+                )
+                records = _records(loan_info)
+                candidates: list[dict[str, Any]] = []
+                for record in records:
+                    if action.margin_mode == "isolated":
+                        if str(record.get("symbol", "")).lower() != instrument:
+                            continue
+                        candidates.extend(
+                            item
+                            for item in record.get("currencies", [])
+                            if isinstance(item, dict)
+                        )
+                    else:
+                        candidates.append(record)
+                quota = next(
+                    (
+                        item
+                        for item in candidates
+                        if str(item.get("currency", "")).lower() == currency
+                    ),
+                    None,
+                )
+                if quota is None:
+                    _check(
+                        checks,
+                        "error",
+                        "loan_currency_unavailable",
+                        "HTX did not report a loan quota for this currency.",
+                    )
+                else:
+                    minimum = _rule_decimal(quota, "min-loan-amt")
+                    available = _rule_decimal(quota, "loanable-amt")
+                    if minimum is not None and action.amount < minimum:
+                        _check(
+                            checks,
+                            "error",
+                            "loan_below_minimum",
+                            f"amount is below HTX minimum loan amount {decimal_to_text(minimum)}.",
+                        )
+                    if available is not None and action.amount > available:
+                        _check(
+                            checks,
+                            "error",
+                            "loan_above_available",
+                            f"amount exceeds HTX currently loanable amount {decimal_to_text(available)}.",
+                        )
+            except (api.HtxError, ToolError) as exc:
+                warnings.append(f"loan_info: {type(exc).__name__}: {exc}")
+        else:
+            path = f"/v1/{stem}/orders/{api._text(action.loan_order_id, 'loan_order_id')}/repay"
+            body = {"amount": amount}
+        return {
+            "status": "blocked"
+            if any(item["severity"] == "error" for item in checks)
+            else "ready",
+            "action": action.action,
+            "margin_mode": action.margin_mode,
+            "request": {"method": "POST", "path": path, "body": body},
+            "checks": checks,
+            "warnings": warnings,
+        }
+
+    @mcp.tool(annotations=api.READ, toolsets={"analysis"})
+    async def htx_get_spot_margin_snapshot(
+        margin_mode: Annotated[
+            Literal["isolated", "cross"],
+            Field(
+                description="Spot-margin mode: isolated per symbol or cross across currencies."
+            ),
+        ],
+        instrument: Annotated[
+            str | None,
+            Field(
+                description="Required isolated-margin symbol; omit for cross margin."
+            ),
+        ] = None,
+        include_raw: IncludeRaw = False,
+    ) -> dict[str, Any]:
+        """Return compact spot-margin balances, debt/risk fields, and current loan quotas.
+
+        This read-only preflight is designed to precede borrowing, repayment, or any margin-funded trade.
+        """
+
+        if margin_mode == "isolated" and instrument is None:
+            raise ToolError("instrument is required for isolated spot margin")
+        if margin_mode == "cross" and instrument is not None:
+            raise ToolError("instrument must be omitted for cross spot margin")
+        symbol = api._symbol(instrument) if instrument else None
+        account, loan_info = await asyncio.gather(
+            api.spot_margin_get_account(margin_mode, symbol),
+            api.spot_margin_get_loan_info(margin_mode, symbol),
+            return_exceptions=True,
+        )
+        result: dict[str, Any] = {
+            "margin_mode": margin_mode,
+            "instrument": symbol,
+            "as_of_ms": int(time.time() * 1000),
+            "warnings": [],
+        }
+        raw: dict[str, Any] = {}
+        for name, response in (("account", account), ("loan_info", loan_info)):
+            if isinstance(response, Exception):
+                result["warnings"].append(
+                    f"{name}: {type(response).__name__}: {response}"
+                )
+            else:
+                result[name] = _data(response)
+                raw[name] = response
+        if include_raw:
+            result["raw"] = raw
+        return result
+
+    @mcp.tool(annotations=api.READ, toolsets={"planning"})
+    async def htx_plan_spot_margin_action(
+        action: SpotMarginAction,
+    ) -> SpotMarginPlanResult:
+        """Validate and normalize one spot-margin transfer, borrow, or targeted repayment.
+
+        Borrow plans check HTX's live currency quota where available; a ready plan is still a review artifact, not an execution request.
+        """
+
+        return await plan_spot_margin_action(action)
+
+    @mcp.tool(annotations=api.WRITE, toolsets={"execution"})
+    async def htx_execute_spot_margin_action(
+        action: SpotMarginAction, confirm: Confirm = False
+    ) -> SpotMarginExecutionResult:
+        """Revalidate then execute one explicit spot-margin funding action behind both safety gates.
+
+        Use the snapshot and plan tools first. After a confirmed mutation, refresh the snapshot because interest, risk, and transferable balances may have changed.
+        """
+
+        plan = await plan_spot_margin_action(action)
+        if plan["status"] == "blocked":
+            return {
+                "plan": plan,
+                "execution": {
+                    "executed": False,
+                    "dry_run": True,
+                    "reason": "validation_blocked",
+                },
+            }
+        try:
+            execution = await api._mutation(
+                "htx_execute_spot_margin_action",
+                plan["request"]["path"],
+                plan["request"]["body"],
+                confirm,
+            )
+        except api.HtxError as exc:
+            execution = {
+                "executed": False,
+                "dry_run": False,
+                "ok": False,
+                "error": api._diagnostic_error(exc),
+            }
+        return {"plan": plan, "execution": execution}
+
     @mcp.tool(annotations=api.READ, toolsets={"planning"})
     async def htx_validate_trade_intent(intent: TradeIntent) -> TradeValidationResult:
         """Validate a product-neutral trade intent and return checks without a request preview."""
@@ -1192,7 +1446,11 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
         path = (
             "/v1/order/orders/place"
             if intent.product == "spot"
-            else api._swap_endpoint("order", intent.margin_mode)
+            else (
+                "/v5/trade/order"
+                if api.client.config.swap_api_version == "v5"
+                else api._swap_endpoint("order", intent.margin_mode)
+            )
         )
         try:
             execution = await api._mutation("htx_submit_trade", path, request, confirm)
@@ -1237,12 +1495,22 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             else:
                 payload = await api.spot_get_order(order_id or "")
         else:
-            payload = await api.futures_get_order_info(
-                api._contract(instrument),
-                order_id=order_id,
-                margin_mode=margin_mode,
-                client_order_id=client_order_id,
-            )
+            if api.client.config.swap_api_version == "v5":
+                payload = await api.v5_get_order(
+                    api._contract(instrument),
+                    order_id=order_id,
+                    client_order_id=str(client_order_id)
+                    if client_order_id is not None
+                    else None,
+                    margin_mode=margin_mode,
+                )
+            else:
+                payload = await api.futures_get_order_info(
+                    api._contract(instrument),
+                    order_id=order_id,
+                    margin_mode=margin_mode,
+                    client_order_id=client_order_id,
+                )
         return {"product": product, "instrument": instrument, "order": _data(payload)}
 
     @mcp.tool(annotations=api.WRITE, toolsets={"execution"})
@@ -1282,7 +1550,11 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                 )
                 body = {}
         else:
-            path = api._swap_endpoint("cancel", margin_mode)
+            path = (
+                "/v5/trade/cancel_order"
+                if api.client.config.swap_api_version == "v5"
+                else api._swap_endpoint("cancel", margin_mode)
+            )
             body = api._swap_body(
                 api._contract(instrument),
                 order_id=order_id,

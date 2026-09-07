@@ -972,6 +972,7 @@ def configuration_resource() -> str:
             "credentials_configured": client.credentials_configured,
             "trading_enabled": client.config.enable_trading,
             "swap_trading_enabled": client.config.enable_swap_trading,
+            "swap_api_version": client.config.swap_api_version,
             "log_level": LOG_LEVEL,
             "log_path": str(LOG_PATH),
             "log_max_bytes": LOG_MAX_BYTES,
@@ -979,7 +980,7 @@ def configuration_resource() -> str:
             "toolsets": os.getenv("HTX_TOOLSETS")
             or "analysis,planning,ops (semantic default)",
             "spot_account_id_configured": bool(client.config.spot_account_id),
-            "supported_products": ["spot", "usdt-margined-swap"],
+            "supported_products": ["spot", "spot-margin", "usdt-margined-swap"],
             "safety": {
                 "mutations_require_confirm": True,
                 "mutations_require_HTX_ENABLE_TRADING": True,
@@ -1092,16 +1093,20 @@ def _v3_margin_account(
 
 
 # ---------------------------------------------------------------------------
+from . import spot_margin_tools as _spot_margin_tools
 from . import spot_tools as _spot_tools
 from . import swap_account_tools as _swap_account_tools
 from . import swap_market_tools as _swap_market_tools
 from . import swap_trading_tools as _swap_trading_tools
+from . import swap_v5_tools as _swap_v5_tools
 
 for _tool_module in (
     _spot_tools,
+    _spot_margin_tools,
     _swap_market_tools,
     _swap_account_tools,
     _swap_trading_tools,
+    _swap_v5_tools,
 ):
     globals().update(
         {name: getattr(_tool_module, name) for name in _tool_module.__all__}

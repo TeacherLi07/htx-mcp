@@ -35,6 +35,40 @@ class RoutingHttp:
         pass
 
 
+def test_v5_semantic_account_snapshot_uses_multi_asset_endpoints(monkeypatch):
+    """The production semantic path must not fall back to linear-swap v1/v3."""
+
+    _install_router(
+        monkeypatch,
+        {
+            "/v5/account/balance": _ok({"assets": [{"currency": "USDT"}]}),
+            "/v5/trade/position/opens": _ok(
+                [{"contract_code": "BTC-USDT", "volume": "1"}]
+            ),
+            "/v5/trade/order/opens": _ok([]),
+        },
+    )
+    original = server.client.config
+    server.client.config = replace(original, swap_api_version="v5")
+    try:
+        result = asyncio.run(
+            mcp.call_tool(
+                "htx_get_account_snapshot",
+                {
+                    "product": "swap",
+                    "instrument": "BTC-USDT",
+                    "include": ["balances", "positions", "open_orders"],
+                },
+            )
+        ).structured_content
+    finally:
+        server.client.config = original
+
+    assert result["balances"] == {"assets": [{"currency": "USDT"}]}
+    assert result["positions"] == [{"contract_code": "BTC-USDT", "volume": "1"}]
+    assert result["open_orders"] == []
+
+
 def _install_router(monkeypatch, responses):
     http = RoutingHttp(responses)
     monkeypatch.setattr(server.client, "_http", http)
@@ -1029,3 +1063,134 @@ def test_spot_submit_dry_run_does_not_resolve_an_account(monkeypatch):
         result.structured_content["validation"]["request"]["account-id"]
         == "<auto-resolve>"
     )
+
+
+def test_spot_margin_snapshot_and_borrow_plan_match_low_level_endpoints(monkeypatch):
+    account = {"id": 7, "symbol": "btcusdt", "risk-rate": "2.5", "list": []}
+    loan_info = [
+        {
+            "symbol": "btcusdt",
+            "currencies": [
+                {
+                    "currency": "usdt",
+                    "min-loan-amt": "10",
+                    "loanable-amt": "100",
+                }
+            ],
+        }
+    ]
+    _install_router(
+        monkeypatch,
+        {
+            "/v1/margin/accounts/balance": _ok([account]),
+            "/v1/margin/loan-info": _ok(loan_info),
+        },
+    )
+
+    low = asyncio.run(
+        mcp.call_tool(
+            "spot_margin_get_account",
+            {"margin_mode": "isolated", "symbol": "btcusdt"},
+        )
+    )
+    snapshot = asyncio.run(
+        mcp.call_tool(
+            "htx_get_spot_margin_snapshot",
+            {"margin_mode": "isolated", "instrument": "btcusdt"},
+        )
+    ).structured_content
+    plan = asyncio.run(
+        mcp.call_tool(
+            "htx_plan_spot_margin_action",
+            {
+                "action": {
+                    "action": "borrow",
+                    "margin_mode": "isolated",
+                    "instrument": "btcusdt",
+                    "currency": "usdt",
+                    "amount": "25",
+                }
+            },
+        )
+    ).structured_content
+
+    assert snapshot["account"] == low.structured_content["data"]
+    assert snapshot["loan_info"] == loan_info
+    assert plan["status"] == "ready"
+    assert plan["request"] == {
+        "method": "POST",
+        "path": "/v1/margin/orders",
+        "body": {"symbol": "btcusdt", "currency": "usdt", "amount": "25"},
+    }
+
+
+def test_spot_margin_cross_transfer_and_blocked_borrow_are_safe(monkeypatch):
+    _install_router(
+        monkeypatch,
+        {
+            "/v1/cross-margin/loan-info": _ok(
+                [{"currency": "usdt", "loanable-amt": "5"}]
+            )
+        },
+    )
+    transfer = asyncio.run(
+        mcp.call_tool(
+            "spot_margin_transfer",
+            {
+                "margin_mode": "cross",
+                "direction": "in",
+                "currency": "usdt",
+                "amount": "1.25",
+            },
+        )
+    ).structured_content
+    blocked = asyncio.run(
+        mcp.call_tool(
+            "htx_execute_spot_margin_action",
+            {
+                "action": {
+                    "action": "borrow",
+                    "margin_mode": "cross",
+                    "currency": "usdt",
+                    "amount": "6",
+                },
+                "confirm": True,
+            },
+        )
+    ).structured_content
+
+    assert transfer["dry_run"] is True
+    assert transfer["request"]["path"] == "/v1/cross-margin/transfer-in"
+    assert transfer["request"]["body"] == {"currency": "usdt", "amount": "1.25"}
+    assert blocked["plan"]["status"] == "blocked"
+    assert blocked["execution"]["reason"] == "validation_blocked"
+    assert {item["code"] for item in blocked["plan"]["checks"]} == {
+        "loan_above_available"
+    }
+
+
+def test_spot_margin_order_uses_the_correct_margin_source(monkeypatch):
+    _install_router(monkeypatch, {})
+    result = asyncio.run(
+        mcp.call_tool(
+            "spot_margin_place_order",
+            {
+                "margin_mode": "isolated",
+                "account_id": "42",
+                "symbol": "btcusdt",
+                "order_type": "buy-limit",
+                "amount": "0.01",
+                "price": "60000.1",
+            },
+        )
+    ).structured_content
+
+    assert result["dry_run"] is True
+    assert result["request"]["body"] == {
+        "account-id": "42",
+        "symbol": "btcusdt",
+        "type": "buy-limit",
+        "amount": "0.01",
+        "price": "60000.1",
+        "source": "margin-api",
+    }
