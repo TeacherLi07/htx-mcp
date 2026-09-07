@@ -66,6 +66,22 @@ HTTPX 默认读取进程的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 和 `NO_P
 
 ## MCP 客户端接入
 
+## 切换 U 本位账户类型
+
+`scripts/switch_to_non_unified_account.py` 是独立于 MCP 的受保护切换脚本。它只读取
+`HTX_SWITCH_API_KEY` 与 `HTX_SWITCH_API_SECRET`，不会读取 MCP 的凭据或自动加载 `.env`。
+先在调用它的进程环境中设置这对专用凭据，再先做只读预检：
+
+```powershell
+uv run python scripts/switch_to_non_unified_account.py
+```
+
+仅在所有 U 本位仓位和挂单均已清空、且确认需切换为可 API 下单的非统一账户后，才显式执行：
+
+```powershell
+uv run python scripts/switch_to_non_unified_account.py --confirm-switch-to-non-unified
+```
+
 ### Codex
 
 将以下配置添加到用户级 `~/.codex/config.toml`，或受信任项目的

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.4 - 2026-09-07
+
+- Add a standalone, separately credentialed and explicitly confirmed script for switching a U-margined account to the non-unified account type.
+
 ## 0.5.3 - 2026-09-07
 
 - Detect HTX USDT-swap unified accounts before querying legacy cross-margin account endpoints.
