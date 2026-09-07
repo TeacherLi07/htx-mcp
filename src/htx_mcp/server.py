@@ -971,6 +971,7 @@ def configuration_resource() -> str:
             "futures_api_base_url": client.config.futures_base_url,
             "credentials_configured": client.credentials_configured,
             "trading_enabled": client.config.enable_trading,
+            "swap_trading_enabled": client.config.enable_swap_trading,
             "log_level": LOG_LEVEL,
             "log_path": str(LOG_PATH),
             "log_max_bytes": LOG_MAX_BYTES,
@@ -982,6 +983,7 @@ def configuration_resource() -> str:
             "safety": {
                 "mutations_require_confirm": True,
                 "mutations_require_HTX_ENABLE_TRADING": True,
+                "swap_mutations_require_HTX_ENABLE_SWAP_TRADING": True,
                 "server_logs_to": "stderr",
             },
         }

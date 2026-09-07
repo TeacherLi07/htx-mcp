@@ -95,6 +95,7 @@ class HtxConfig:
     futures_base_url: str = "https://api.hbdm.com"
     timeout_seconds: float = 20.0
     enable_trading: bool = False
+    enable_swap_trading: bool = True
     spot_account_id: str | None = None
 
     @classmethod
@@ -115,6 +116,7 @@ class HtxConfig:
             ).rstrip("/"),
             timeout_seconds=timeout,
             enable_trading=_truthy(os.getenv("HTX_ENABLE_TRADING")),
+            enable_swap_trading=_truthy(os.getenv("HTX_ENABLE_SWAP_TRADING", "true")),
             spot_account_id=_env_optional("HTX_SPOT_ACCOUNT_ID"),
         )
 
@@ -324,6 +326,17 @@ def ensure_confirmation(
             "executed": False,
             "dry_run": True,
             "reason": "HTX_ENABLE_TRADING is not enabled on the server",
+            "tool": tool_name,
+            "request": dict(request),
+        }
+    if (
+        str(request.get("path", "")).startswith("/linear-swap-api/")
+        and not client.config.enable_swap_trading
+    ):
+        return {
+            "executed": False,
+            "dry_run": True,
+            "reason": "HTX_ENABLE_SWAP_TRADING is not enabled on the server",
             "tool": tool_name,
             "request": dict(request),
         }

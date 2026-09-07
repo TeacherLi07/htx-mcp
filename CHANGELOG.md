@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.6 - 2026-09-07
+
+- Add an independent `HTX_ENABLE_SWAP_TRADING` safety gate so unavailable U-margined contract writes can be disabled without disabling spot trading.
+
 ## 0.5.5 - 2026-09-07
 
 - Emit a support-ticket diagnostic from the standalone account-type switch script without exposing signed authentication query parameters.

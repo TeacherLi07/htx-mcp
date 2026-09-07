@@ -206,6 +206,7 @@ async def htx_diagnose_private_access() -> dict[str, Any]:
         "spot_host": server.client.config.base_url,
         "futures_host": server.client.config.futures_base_url,
         "trading_enabled": server.client.config.enable_trading,
+        "swap_trading_enabled": server.client.config.enable_swap_trading,
     }
     for name, path in {
         "spot_accounts": "/v1/account/accounts",

@@ -173,6 +173,37 @@ def test_mutation_preview_is_default_and_has_no_secret():
     assert "secret" not in str(preview)
 
 
+def test_swap_mutation_can_be_disabled_while_spot_trading_remains_enabled():
+    client = HtxClient(
+        HtxConfig(
+            api_key="key",
+            api_secret="secret",
+            enable_trading=True,
+            enable_swap_trading=False,
+        ),
+        http=FakeHttp(),
+    )
+
+    swap_preview = ensure_confirmation(
+        client,
+        tool_name="futures_place_order",
+        confirm=True,
+        request={"path": "/linear-swap-api/v1/swap_order", "body": {}},
+    )
+    spot_permission = ensure_confirmation(
+        client,
+        tool_name="spot_place_order",
+        confirm=True,
+        request={"path": "/v1/order/orders/place", "body": {}},
+    )
+
+    assert swap_preview["dry_run"] is True
+    assert swap_preview["reason"] == (
+        "HTX_ENABLE_SWAP_TRADING is not enabled on the server"
+    )
+    assert spot_permission is None
+
+
 def test_optional_environment_values_are_trimmed(monkeypatch):
     monkeypatch.setenv("HTX_TEST_VALUE", "  api-key-with-newline  ")
     assert _env_optional("HTX_TEST_VALUE") == "api-key-with-newline"

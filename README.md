@@ -47,6 +47,7 @@ uv run pytest -q
 | `HTX_SPOT_ACCOUNT_ID` | 空 | 可选默认现货账户 ID；留空时自动解析唯一 working spot 账户 |
 | `HTX_TIMEOUT_SECONDS` | `20` | 单次 HTTP 请求超时 |
 | `HTX_ENABLE_TRADING` | `false` | 是否允许写接口真正发往 HTX；`false` 时所有写工具只返回 dry-run |
+| `HTX_ENABLE_SWAP_TRADING` | `true` | 是否允许 U 本位合约写接口；`false` 时合约下单、撤单、杠杆和策略写入均只返回 dry-run，现货写接口不受影响 |
 | `HTX_TOOLSETS` | `analysis,planning,ops` | 工具集 allow-list：`analysis`、`planning`、`execution`、`advanced`、`ops`；`core` 等价于 analysis+planning，`trading` 等价于 analysis+planning+execution，`all` 发布完整兼容层 |
 | `MCP_TRANSPORT` | `stdio` | `stdio`、`sse` 或 `streamable-http` |
 | `HTX_LOG_LEVEL` | `INFO` | 文件日志级别：`DEBUG`、`INFO`、`WARNING`、`ERROR` 或 `CRITICAL` |
