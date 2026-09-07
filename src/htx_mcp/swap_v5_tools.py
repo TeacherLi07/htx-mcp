@@ -68,6 +68,30 @@ async def v5_get_order(
     )
 
 
+async def v5_get_trade_history(
+    *,
+    contract_code: str | None = None,
+    order_id: str | None = None,
+    start_time: int | None = None,
+    end_time: int | None = None,
+    from_cursor: int | None = None,
+    limit: int | None = None,
+    direct: Literal["next", "prev"] | None = None,
+) -> dict[str, Any]:
+    """Return v5 execution details from HTX's rolling three-day history."""
+
+    return await server._private_get(
+        "/v5/trade/order/details",
+        contract_code=_contract(contract_code),
+        order_id=order_id,
+        start_time=start_time,
+        end_time=end_time,
+        **{"from": from_cursor},
+        limit=limit,
+        direct=direct,
+    )
+
+
 async def v5_submit_order(body: dict[str, Any], confirm: bool) -> dict[str, Any]:
     """Submit one v5 order behind the normal MCP confirmation gates."""
 
@@ -136,6 +160,57 @@ async def futures_v5_get_order(
     )
 
 
+@server.mcp.tool(annotations=server.READ)
+async def futures_v5_get_trade_history(
+    contract_code: server.ContractCode | None = None,
+    order_id: server.ExchangeOrderId | None = None,
+    start_time: server.MillisecondTimestamp | None = None,
+    end_time: server.MillisecondTimestamp | None = None,
+    from_cursor: Annotated[
+        int | None,
+        Field(
+            ge=0,
+            description="V5 execution-history cursor returned by the previous page.",
+        ),
+    ] = None,
+    limit: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            le=100,
+            description="Maximum number of v5 execution records to return (1-100).",
+        ),
+    ] = 50,
+    direct: Annotated[
+        Literal["next", "prev"] | None,
+        Field(
+            description="V5 cursor direction: next for newer or prev for older execution records."
+        ),
+    ] = "prev",
+) -> dict[str, Any]:
+    """Read authenticated v5 USDT-swap execution details from HTX's most recent three days.
+
+    Filter by contract or order when reconciling an order. Time ranges and page
+    cursors are bounded to HTX's rolling three-day retention window.
+    """
+
+    server._validate_time_range(
+        start_time,
+        end_time,
+        max_window_ms=3 * 24 * 60 * 60 * 1000,
+        max_age_ms=3 * 24 * 60 * 60 * 1000,
+    )
+    return await v5_get_trade_history(
+        contract_code=contract_code,
+        order_id=server._text(order_id, "order_id") if order_id is not None else None,
+        start_time=start_time,
+        end_time=end_time,
+        from_cursor=from_cursor,
+        limit=limit,
+        direct=direct,
+    )
+
+
 @server.mcp.tool(annotations=server.WRITE, toolsets={"execution"})
 async def futures_v5_set_leverage(
     contract_code: server.ContractCode,
@@ -176,5 +251,6 @@ __all__ = [
     "v5_get_open_orders",
     "v5_get_order",
     "v5_get_positions",
+    "v5_get_trade_history",
     "v5_submit_order",
 ]

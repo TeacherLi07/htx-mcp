@@ -113,7 +113,16 @@ def _records(payload: dict[str, Any]) -> list[dict[str, Any]]:
     if isinstance(data, list):
         return [item for item in data if isinstance(item, dict)]
     if isinstance(data, dict):
-        for key in ("items", "list", "symbols", "contracts", "orders", "positions"):
+        for key in (
+            "items",
+            "list",
+            "symbols",
+            "contracts",
+            "orders",
+            "positions",
+            "trades",
+            "matches",
+        ):
             if isinstance(data.get(key), list):
                 return [item for item in data[key] if isinstance(item, dict)]
         return [data]
@@ -233,6 +242,96 @@ def _client_order_id(
         raise ToolError(
             "swap client_order_id must be an integer from 1 through 9223372036854775807"
         )
+
+
+def _first_value(record: dict[str, Any], *keys: str) -> Any:
+    """Return the first present non-empty field across HTX response variants."""
+
+    for key in keys:
+        value = record.get(key)
+        if value is not None and value != "":
+            return value
+    return None
+
+
+def _normalized_trade(record: dict[str, Any]) -> dict[str, Any]:
+    """Normalize spot, legacy-swap, and v5 execution fields for analysis tools."""
+
+    side = _first_value(record, "side", "direction", "type")
+    if isinstance(side, str) and "-" in side:
+        side = side.split("-", 1)[0]
+    return {
+        "trade_id": _first_value(record, "trade_id", "match-id", "match_id", "id"),
+        "order_id": _first_value(record, "order_id", "order-id"),
+        "client_order_id": _first_value(record, "client_order_id", "client-order-id"),
+        "instrument": _first_value(record, "contract_code", "symbol", "contract"),
+        "side": side,
+        "price": _number_text(
+            _first_value(record, "trade_price", "price", "filled-price", "filled_price")
+        ),
+        "quantity": _number_text(
+            _first_value(
+                record,
+                "trade_volume",
+                "filled_amount",
+                "filled-amount",
+                "volume",
+                "filled_quantity",
+            )
+        ),
+        "fee": _number_text(
+            _first_value(record, "transact_fee", "filled-fees", "fee", "trade_fee")
+        ),
+        "fee_currency": _first_value(
+            record, "fee_currency", "fee-currency", "fee-currency-code"
+        ),
+        "timestamp_ms": _first_value(
+            record, "created_at", "created-at", "trade_time", "trade-time", "ts"
+        ),
+    }
+
+
+def _normalized_market_trade(record: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a public spot or swap tape record without a raw envelope."""
+
+    return {
+        "timestamp_ms": _first_value(record, "ts", "trade_time", "trade-time"),
+        "side": _first_value(record, "direction", "side"),
+        "price": _number_text(_first_value(record, "price", "trade_price")),
+        "quantity": _number_text(
+            _first_value(record, "amount", "quantity", "volume", "trade_volume")
+        ),
+        "trade_id": _first_value(record, "id", "trade_id", "trade-id"),
+    }
+
+
+def _market_trade_records(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Flatten HTX's spot batches and swap trade lists into tape records."""
+
+    records: list[dict[str, Any]] = []
+    for item in _records(payload):
+        nested = item.get("data")
+        if isinstance(nested, list):
+            records.extend(record for record in nested if isinstance(record, dict))
+        else:
+            records.append(item)
+    return records
+
+
+def _normalized_candle_records(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return chronological fixed-point OHLCV records for market context."""
+
+    return [
+        {
+            "open_time_ms": candle.open_time_ms,
+            "open": decimal_to_text(candle.open),
+            "high": decimal_to_text(candle.high),
+            "low": decimal_to_text(candle.low),
+            "close": decimal_to_text(candle.close),
+            "volume": decimal_to_text(candle.volume),
+        }
+        for candle in candles_from_htx(_data(payload))
+    ]
 
 
 def _check(
@@ -502,15 +601,13 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                     if using_v5
                     else api.futures_get_positions(margin_mode, code)
                 )
-            if "open_orders" in fields and code:
-                calls["open_orders"] = (
-                    api.v5_get_open_orders(code, margin_mode)
-                    if using_v5
-                    else api.futures_get_open_orders(code, margin_mode)
-                )
+            if "open_orders" in fields and using_v5:
+                calls["open_orders"] = api.v5_get_open_orders(code, margin_mode)
+            elif "open_orders" in fields and code:
+                calls["open_orders"] = api.futures_get_open_orders(code, margin_mode)
             elif "open_orders" in fields:
                 result["warnings"].append(
-                    "open_orders: instrument is required for swap account snapshots"
+                    "open_orders: instrument is required for legacy swap account snapshots"
                 )
             if "api_status" in fields and not using_v5:
                 calls["api_status"] = api.futures_get_api_trading_status()
@@ -1215,6 +1312,300 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
         return await fetch_account(
             product, instrument, margin_mode, include, include_raw
         )
+
+    @mcp.tool(annotations=api.READ, toolsets={"analysis"})
+    async def htx_get_portfolio_snapshot(
+        margin_mode: MarginMode = "isolated",
+        include_open_orders: Annotated[
+            bool,
+            Field(
+                description="Include active orders. For legacy swaps this requires a per-contract account snapshot, so the result reports that limitation as a warning."
+            ),
+        ] = True,
+    ) -> dict[str, Any]:
+        """Return one compact cross-product portfolio snapshot for account review.
+
+        It concurrently reads spot and USDT-swap balances and positions. V5 swap
+        accounts also return open orders across every contract, so this is the
+        preferred pre-session portfolio check; no market data is fetched.
+        """
+
+        spot_fields = ["balances"]
+        swap_fields = ["balances", "positions"]
+        if include_open_orders:
+            spot_fields.append("open_orders")
+            swap_fields.append("open_orders")
+        spot, swap = await asyncio.gather(
+            fetch_account("spot", None, margin_mode, spot_fields, False),
+            fetch_account("swap", None, margin_mode, swap_fields, False),
+            return_exceptions=True,
+        )
+        result: dict[str, Any] = {
+            "as_of_ms": int(time.time() * 1000),
+            "accounts": {},
+            "warnings": [],
+        }
+        for product, snapshot in (("spot", spot), ("swap", swap)):
+            if isinstance(snapshot, Exception):
+                result["warnings"].append(
+                    f"{product}: {type(snapshot).__name__}: {snapshot}"
+                )
+            else:
+                result["accounts"][product] = snapshot
+                result["warnings"].extend(
+                    f"{product}: {warning}" for warning in snapshot.get("warnings", [])
+                )
+        return result
+
+    @mcp.tool(annotations=api.READ, toolsets={"analysis"})
+    async def htx_get_market_context(
+        product: Product,
+        instrument: Instrument,
+        include: Annotated[
+            list[Literal["candles", "recent_trades", "funding_history"]] | None,
+            Field(
+                description="Optional context sections. Omit for candles and recent trades; funding_history is available only for swaps."
+            ),
+        ] = None,
+        candle_period: Annotated[
+            str,
+            Field(
+                description="HTX candle interval for candles: 1min, 5min, 15min, 30min, 60min, 4hour, 1day, 1week, or 1mon."
+            ),
+        ] = "60min",
+        candle_size: Annotated[
+            int,
+            Field(ge=1, le=500, description="Number of normalized candles (1-500)."),
+        ] = 100,
+        recent_trade_limit: Annotated[
+            int,
+            Field(
+                ge=1, le=200, description="Number of normalized tape records (1-200)."
+            ),
+        ] = 50,
+        funding_history_limit: Annotated[
+            int,
+            Field(
+                ge=1, le=50, description="Number of swap funding-rate records (1-50)."
+            ),
+        ] = 20,
+    ) -> dict[str, Any]:
+        """Return bounded research context without exposing raw HTX envelopes.
+
+        Use this when indicators alone are insufficient and a trader needs
+        inspectable OHLCV, a recent public trade tape, or swap funding history.
+        It is a REST snapshot, not a low-latency stream.
+        """
+
+        period_ms(candle_period)
+        code = (
+            api._symbol(instrument) if product == "spot" else api._contract(instrument)
+        )
+        fields = set(include or ["candles", "recent_trades"])
+        calls: dict[str, Any] = {}
+        if "candles" in fields:
+            calls["candles"] = (
+                api.spot_get_klines(code, period=candle_period, size=candle_size)
+                if product == "spot"
+                else api.futures_get_klines(
+                    code, period=candle_period, size=candle_size
+                )
+            )
+        if "recent_trades" in fields:
+            calls["recent_trades"] = (
+                api.spot_get_recent_trades(code, size=recent_trade_limit)
+                if product == "spot"
+                else api.futures_get_recent_trades(code, size=recent_trade_limit)
+            )
+        warnings: list[str] = []
+        if "funding_history" in fields:
+            if product == "swap":
+                calls["funding_history"] = api.futures_get_historical_funding_rate(
+                    code, page_size=funding_history_limit
+                )
+            else:
+                warnings.append("funding_history: field is only supported for swaps")
+        responses = await asyncio.gather(*calls.values(), return_exceptions=True)
+        data: dict[str, Any] = {}
+        for name, response in zip(calls, responses):
+            if isinstance(response, Exception):
+                warnings.append(f"{name}: {type(response).__name__}: {response}")
+            elif name == "candles":
+                data[name] = _normalized_candle_records(response)
+            elif name == "recent_trades":
+                data[name] = [
+                    _normalized_market_trade(record)
+                    for record in _market_trade_records(response)[:recent_trade_limit]
+                ]
+            else:
+                data[name] = _records(response)[:funding_history_limit]
+        return {
+            "product": product,
+            "instrument": code,
+            "as_of_ms": int(time.time() * 1000),
+            "data": data,
+            "warnings": warnings,
+        }
+
+    @mcp.tool(annotations=api.READ, toolsets={"analysis"})
+    async def htx_get_trade_history(
+        product: Product,
+        instrument: Instrument,
+        order_id: Annotated[
+            str | None,
+            Field(
+                description="Optional exchange order ID. When supplied, return fills for that order rather than a paged instrument history."
+            ),
+        ] = None,
+        margin_mode: MarginMode = "isolated",
+        start_time: Annotated[
+            int | None,
+            Field(
+                description="Optional inclusive millisecond start time for a paged history query."
+            ),
+        ] = None,
+        end_time: Annotated[
+            int | None,
+            Field(
+                description="Optional inclusive millisecond end time for a paged history query."
+            ),
+        ] = None,
+        cursor: Annotated[
+            str | int | None,
+            Field(
+                description="Opaque cursor from the previous result. Omit on the first page."
+            ),
+        ] = None,
+        limit: Annotated[
+            int,
+            Field(
+                ge=1, le=100, description="Maximum normalized fills to return (1-100)."
+            ),
+        ] = 50,
+        direction: Annotated[
+            Literal["next", "prev"],
+            Field(
+                description="Page direction: prev returns older records and next advances from a cursor."
+            ),
+        ] = "prev",
+        include_raw: IncludeRaw = False,
+    ) -> dict[str, Any]:
+        """Return compact executed-fill history for one instrument, not order history.
+
+        Traders normally review fills to reconcile an order, calculate realized
+        entry/exit prices and fees, or inspect recent execution quality. Provide
+        ``order_id`` for reconciliation; otherwise use a bounded time window and
+        cursor to page a recent instrument history. The exchange retention window
+        is 48 hours for spot and legacy swaps, and three days for v5 swaps.
+        """
+
+        code = (
+            api._symbol(instrument) if product == "spot" else api._contract(instrument)
+        )
+        if order_id is not None and (
+            start_time is not None or end_time is not None or cursor is not None
+        ):
+            raise ToolError(
+                "order_id cannot be combined with time-range or cursor pagination"
+            )
+        if order_id is not None:
+            order_id = api._text(order_id, "order_id")
+
+        if product == "spot":
+            if order_id is not None:
+                payload = await api.spot_get_order_match_results(order_id)
+            else:
+                api._validate_time_range(
+                    start_time,
+                    end_time,
+                    max_window_ms=48 * 60 * 60 * 1000,
+                    max_age_ms=180 * 24 * 60 * 60 * 1000,
+                )
+                payload = await api.spot_get_match_results(
+                    code,
+                    size=limit,
+                    start_time=start_time,
+                    end_time=end_time,
+                    from_match_id=str(cursor) if cursor is not None else None,
+                    direct=direction,
+                )
+        elif api.client.config.swap_api_version == "v5":
+            api._validate_time_range(
+                start_time,
+                end_time,
+                max_window_ms=3 * 24 * 60 * 60 * 1000,
+                max_age_ms=3 * 24 * 60 * 60 * 1000,
+            )
+            if cursor is not None:
+                try:
+                    from_cursor = int(cursor)
+                except (TypeError, ValueError) as exc:
+                    raise ToolError("v5 cursor must be an integer") from exc
+                if from_cursor < 0:
+                    raise ToolError("v5 cursor must be non-negative")
+            else:
+                from_cursor = None
+            payload = await api.v5_get_trade_history(
+                contract_code=code,
+                order_id=order_id,
+                start_time=start_time,
+                end_time=end_time,
+                from_cursor=from_cursor,
+                limit=limit,
+                direct=direction,
+            )
+        else:
+            if order_id is not None:
+                payload = await api.futures_get_order_detail(
+                    code, order_id, margin_mode=margin_mode, page_size=limit
+                )
+            else:
+                api._validate_time_range(
+                    start_time,
+                    end_time,
+                    max_window_ms=48 * 60 * 60 * 1000,
+                )
+                if cursor is not None:
+                    try:
+                        from_id = int(cursor)
+                    except (TypeError, ValueError) as exc:
+                        raise ToolError(
+                            "legacy swap cursor must be an integer"
+                        ) from exc
+                    if from_id <= 0:
+                        raise ToolError("legacy swap cursor must be positive")
+                else:
+                    from_id = None
+                payload = await api.futures_get_match_results(
+                    code,
+                    margin_mode=margin_mode,
+                    start_time=start_time,
+                    end_time=end_time,
+                    from_id=from_id,
+                    size=limit,
+                    direct=direction,
+                )
+
+        data = _data(payload)
+        records = _records(payload)[:limit]
+        result: dict[str, Any] = {
+            "product": product,
+            "instrument": code,
+            "margin_mode": margin_mode if product == "swap" else None,
+            "records": [_normalized_trade(record) for record in records],
+            "returned": len(records),
+            "next_cursor": _first_value(
+                payload, "next_id", "next-id", "next_cursor", "next-cursor"
+            )
+            or (
+                _first_value(data, "next_id", "next-id", "next_cursor", "next-cursor")
+                if isinstance(data, dict)
+                else None
+            ),
+        }
+        if include_raw:
+            result["raw"] = payload
+        return result
 
     @mcp.tool(annotations=api.READ, toolsets={"analysis"})
     async def htx_get_risk_snapshot(

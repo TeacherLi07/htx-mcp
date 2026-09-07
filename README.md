@@ -241,6 +241,7 @@ HTX_ENABLE_TRADING = "false"
 - `futures_get_history_orders`、`futures_get_match_results`、
   `futures_get_financial_records`、`futures_get_liquidation_orders`：使用 HTX 当前
   v3 历史订单、成交、财务记录和强平查询接口；已停用的 v1 查询接口不会暴露。
+- `futures_v5_get_trade_history`：查询 v5 最近三天的成交明细；支持合约、订单、时间范围和游标筛选，属于 `advanced` 只读工具集。
 - `futures_place_order`、`futures_place_batch_orders`、`futures_cancel_*`、
   `futures_switch_leverage`、`futures_lightning_close_position`：合约交易。
 - `futures_place_trigger_order`、`futures_get_trigger_*`、
@@ -274,7 +275,7 @@ U 本位合约接受 `1` 到 `9223372036854775807` 的整数。合约查询和�
 
 当前 API 映射工具仍完整保留在 `advanced` 工具集中；高层语义工具负责聚合常用工作流：
 
-- `analysis`：`htx_get_market_snapshot`、`htx_get_technical_indicators`、`htx_wait_for_market_event`、`htx_get_instrument_rules`、`htx_get_account_snapshot`、`htx_get_risk_snapshot`、`htx_get_spot_margin_snapshot`。`htx_get_technical_indicators` 只返回模型请求的确定性指标（SMA/EMA、RSI、ATR、成交量均线、布林带、MACD、KDJ），默认排除未收盘 K 线；日常分析不暴露原始 K 线。`htx_wait_for_market_event` 只接受有上限的声明式价格/指标阈值，超时必定返回且不执行写操作。需要研究或排障时，`advanced` 工具集仍提供 `spot_get_klines` 和 `futures_get_klines`。
+- `analysis`：`htx_get_market_snapshot`、`htx_get_market_context`、`htx_get_technical_indicators`、`htx_wait_for_market_event`、`htx_get_instrument_rules`、`htx_get_account_snapshot`、`htx_get_portfolio_snapshot`、`htx_get_trade_history`、`htx_get_risk_snapshot`、`htx_get_spot_margin_snapshot`。`htx_get_portfolio_snapshot` 是跨现货和合约的盘前账户总览；V5 合约会返回所有合约的当前挂单。`htx_get_market_context` 按需以统一固定点字段返回 K 线、近期成交和合约历史资金费率，供需要审阅市场行为的 REST 分析使用。`htx_get_trade_history` 以统一字段返回实际成交、价格、数量、手续费和时间；复核单笔委托时传 `order_id`，研究近期执行质量时按标的、时间窗和游标分页。`htx_get_technical_indicators` 只返回模型请求的确定性指标（SMA/EMA、RSI、ATR、成交量均线、布林带、MACD、KDJ），默认排除未收盘 K 线；日常分析不暴露原始 K 线。`htx_wait_for_market_event` 只接受有上限的声明式价格/指标阈值，超时必定返回且不执行写操作。需要研究或排障时，`advanced` 工具集仍提供完整兼容层。
 
 等待工具在条件满足或超时前不会向 LLM 发送中间市场更新；仅在有意延后分析时使用，并在工具返回后重新获取市场快照。
 - `planning`：`htx_validate_trade_intent`、`htx_preview_trade`、`htx_reconcile_trade`、`htx_plan_spot_margin_action`。

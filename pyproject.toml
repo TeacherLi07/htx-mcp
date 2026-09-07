@@ -1,6 +1,6 @@
 [project]
 name = "htx-official-api-mcp"
-version = "0.6.0"
+version = "0.6.1"
 description = "Full-featured MCP server for HTX official REST APIs"
 readme = "README.md"
 requires-python = ">=3.10"

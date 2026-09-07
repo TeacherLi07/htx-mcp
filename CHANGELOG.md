@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.1 - 2026-09-07
+
+Add：
+
+- htx_get_portfolio_snapshot：一次汇总现货与 U 本位合约余额、仓位和挂单；V5 合约支持不传标的时获取全部合约挂单。
+- htx_get_market_context：按需返回规范化 K 线、近期成交与合约历史资金费率，避免暴露原始 HTX envelope。
+
 ## 0.6.0 - 2026-09-07
 
 - Make HTX USDT-margined semantic account, position, order, reconciliation, and cancellation workflows use the v5 multi-asset API by default.

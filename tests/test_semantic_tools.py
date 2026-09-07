@@ -69,6 +69,102 @@ def test_v5_semantic_account_snapshot_uses_multi_asset_endpoints(monkeypatch):
     assert result["open_orders"] == []
 
 
+def test_portfolio_snapshot_returns_spot_and_v5_swap_state(monkeypatch):
+    _install_router(
+        monkeypatch,
+        {
+            "/v1/account/accounts/1000/balance": _ok({"list": [{"currency": "usdt"}]}),
+            "/v1/order/openOrders": _ok([{"symbol": "btcusdt", "id": "spot-1"}]),
+            "/v5/account/balance": _ok({"assets": [{"currency": "USDT"}]}),
+            "/v5/trade/position/opens": _ok(
+                [{"contract_code": "BTC-USDT", "volume": "1"}]
+            ),
+            "/v5/trade/order/opens": _ok(
+                [{"contract_code": "ETH-USDT", "order_id": "swap-1"}]
+            ),
+        },
+    )
+    original = server.client.config
+    server.client.config = replace(
+        original, swap_api_version="v5", spot_account_id="1000"
+    )
+    try:
+        result = asyncio.run(
+            mcp.call_tool("htx_get_portfolio_snapshot", {})
+        ).structured_content
+    finally:
+        server.client.config = original
+
+    assert result["accounts"]["spot"]["open_orders"] == [
+        {"symbol": "btcusdt", "id": "spot-1"}
+    ]
+    assert result["accounts"]["swap"]["open_orders"] == [
+        {"contract_code": "ETH-USDT", "order_id": "swap-1"}
+    ]
+    assert result["warnings"] == []
+
+
+def test_market_context_normalizes_swap_research_data(monkeypatch):
+    _install_router(
+        monkeypatch,
+        {
+            "/linear-swap-ex/market/history/kline": _ok(
+                [
+                    {
+                        "id": 1700000000,
+                        "open": "60000",
+                        "high": "61000",
+                        "low": "59000",
+                        "close": "60500",
+                        "vol": "12.50",
+                    }
+                ]
+            ),
+            "/linear-swap-ex/market/history/trade": _ok(
+                [{"id": "trade-1", "direction": "buy", "price": "60500", "amount": "2"}]
+            ),
+            "/linear-swap-api/v1/swap_historical_funding_rate": _ok(
+                [{"funding_rate": "0.0001", "funding_time": 1700000000000}]
+            ),
+        },
+    )
+
+    result = asyncio.run(
+        mcp.call_tool(
+            "htx_get_market_context",
+            {
+                "product": "swap",
+                "instrument": "BTC-USDT",
+                "include": ["candles", "recent_trades", "funding_history"],
+            },
+        )
+    ).structured_content
+
+    assert result["data"]["candles"] == [
+        {
+            "open_time_ms": 1700000000000,
+            "open": "60000",
+            "high": "61000",
+            "low": "59000",
+            "close": "60500",
+            "volume": "12.50",
+        }
+    ]
+    assert result["data"]["recent_trades"] == [
+        {
+            "timestamp_ms": None,
+            "side": "buy",
+            "price": "60500",
+            "quantity": "2",
+            "trade_id": "trade-1",
+        }
+    ]
+    assert result["data"]["funding_history"] == [
+        {"funding_rate": "0.0001", "funding_time": 1700000000000}
+    ]
+    assert result["warnings"] == []
+
+
 def test_v5_preview_uses_position_side_and_rejects_inline_leverage(monkeypatch):
     _install_router(
         monkeypatch,
@@ -148,6 +244,92 @@ def test_v5_preview_uses_position_side_and_rejects_inline_leverage(monkeypatch):
     assert "v5_leverage_must_be_set_separately" in {
         check["code"] for check in blocked["checks"]
     }
+
+
+def test_v5_trade_history_uses_execution_details_endpoint(monkeypatch):
+    _install_router(
+        monkeypatch,
+        {
+            "/v5/trade/order/details": _ok(
+                [{"order_id": "123", "contract_code": "BTC-USDT", "volume": "1"}]
+            )
+        },
+    )
+
+    result = asyncio.run(
+        mcp.call_tool(
+            "futures_v5_get_trade_history",
+            {
+                "contract_code": "BTC-USDT",
+                "order_id": "123",
+                "limit": 10,
+                "direct": "prev",
+            },
+        )
+    ).structured_content
+
+    assert result["data"] == [
+        {"order_id": "123", "contract_code": "BTC-USDT", "volume": "1"}
+    ]
+
+
+def test_semantic_trade_history_normalizes_v5_fills(monkeypatch):
+    _install_router(
+        monkeypatch,
+        {
+            "/v5/trade/order/details": _ok(
+                {
+                    "trades": [
+                        {
+                            "trade_id": "fill-1",
+                            "order_id": "order-1",
+                            "contract_code": "BTC-USDT",
+                            "side": "buy",
+                            "trade_price": "60000.1",
+                            "trade_volume": "2",
+                            "trade_fee": "0.12",
+                            "fee_currency": "USDT",
+                            "trade_time": 1700000000000,
+                        }
+                    ],
+                    "next_cursor": "42",
+                }
+            )
+        },
+    )
+    original = server.client.config
+    server.client.config = replace(original, swap_api_version="v5")
+    try:
+        result = asyncio.run(
+            mcp.call_tool(
+                "htx_get_trade_history",
+                {
+                    "product": "swap",
+                    "instrument": "BTC-USDT",
+                    "limit": 10,
+                    "include_raw": True,
+                },
+            )
+        ).structured_content
+    finally:
+        server.client.config = original
+
+    assert result["records"] == [
+        {
+            "trade_id": "fill-1",
+            "order_id": "order-1",
+            "client_order_id": None,
+            "instrument": "BTC-USDT",
+            "side": "buy",
+            "price": "60000.1",
+            "quantity": "2",
+            "fee": "0.12",
+            "fee_currency": "USDT",
+            "timestamp_ms": 1700000000000,
+        }
+    ]
+    assert result["next_cursor"] == "42"
+    assert result["raw"]["data"]["trades"][0]["trade_id"] == "fill-1"
 
 
 def _install_router(monkeypatch, responses):
@@ -624,7 +806,7 @@ def test_account_snapshot_reports_product_dependent_fields(monkeypatch):
     ).structured_content
 
     assert swap["warnings"] == [
-        "open_orders: instrument is required for swap account snapshots"
+        "open_orders: instrument is required for legacy swap account snapshots"
     ]
 
 
