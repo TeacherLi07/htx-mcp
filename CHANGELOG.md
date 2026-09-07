@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.0 - 2026-09-07
+
+- Make HTX USDT-margined semantic account, position, order, reconciliation, and cancellation workflows use the v5 multi-asset API by default.
+- Route v5 calls to the derivatives host and apply the independent swap-trading safety gate to every v5 mutation.
+- Add v5 position-side support, string client-order IDs, explicit v5 leverage configuration, and regression coverage for v5 routing and order construction.
+- Retain the legacy v1/v3 swap mapping behind `HTX_SWAP_API_VERSION=legacy` for non-migrated accounts.
+
 ## 0.5.6 - 2026-09-07
 
 - Add an independent `HTX_ENABLE_SWAP_TRADING` safety gate so unavailable U-margined contract writes can be disabled without disabling spot trading.

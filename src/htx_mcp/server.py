@@ -750,7 +750,7 @@ def _json(value: Any) -> str:
 def _base_url_for(path: str) -> str:
     """Route derivatives to HTX's derivatives host and spot calls to spot host."""
 
-    if path.startswith(("/linear-", "/index/")):
+    if path.startswith(("/linear-", "/index/", "/v5/")):
         return client.config.futures_base_url
     return client.config.base_url
 

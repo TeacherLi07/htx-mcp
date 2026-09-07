@@ -335,7 +335,7 @@ def ensure_confirmation(
             "request": dict(request),
         }
     if (
-        str(request.get("path", "")).startswith("/linear-swap-api/")
+        str(request.get("path", "")).startswith(("/linear-swap-api/", "/v5/"))
         and not client.config.enable_swap_trading
     ):
         return {

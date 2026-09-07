@@ -69,6 +69,87 @@ def test_v5_semantic_account_snapshot_uses_multi_asset_endpoints(monkeypatch):
     assert result["open_orders"] == []
 
 
+def test_v5_preview_uses_position_side_and_rejects_inline_leverage(monkeypatch):
+    _install_router(
+        monkeypatch,
+        {
+            "/linear-swap-api/v1/swap_contract_info": _ok(
+                [
+                    {
+                        "contract_code": "BTC-USDT",
+                        "volume_tick": "1",
+                        "price_tick": "0.1",
+                        "min_volume": "1",
+                    }
+                ]
+            ),
+            "/linear-swap-ex/market/detail/merged": {
+                "status": "ok",
+                "tick": {"close": "60000.1", "bid": [], "ask": []},
+            },
+            "/linear-swap-ex/market/depth": {
+                "status": "ok",
+                "tick": {"bids": [], "asks": []},
+            },
+            "/linear-swap-api/v1/swap_price_limit": _ok([]),
+        },
+    )
+    original = server.client.config
+    server.client.config = replace(original, swap_api_version="v5")
+    try:
+        preview = asyncio.run(
+            mcp.call_tool(
+                "htx_preview_trade",
+                {
+                    "intent": {
+                        "product": "swap",
+                        "instrument": "BTC-USDT",
+                        "side": "buy",
+                        "order_kind": "ioc",
+                        "quantity": "1",
+                        "price": "60000.1",
+                        "position_side": "long",
+                        "client_order_id": "v5-order-1",
+                    }
+                },
+            )
+        ).structured_content
+        blocked = asyncio.run(
+            mcp.call_tool(
+                "htx_validate_trade_intent",
+                {
+                    "intent": {
+                        "product": "swap",
+                        "instrument": "BTC-USDT",
+                        "side": "buy",
+                        "quantity": "1",
+                        "leverage": 5,
+                    }
+                },
+            )
+        ).structured_content
+    finally:
+        server.client.config = original
+
+    assert preview["status"] == "ready"
+    assert preview["request"] == {
+        "contract_code": "BTC-USDT",
+        "margin_mode": "isolated",
+        "side": "buy",
+        "position_side": "long",
+        "type": "limit",
+        "volume": "1",
+        "price": "60000.1",
+        "time_in_force": "ioc",
+        "reduce_only": 0,
+        "client_order_id": "v5-order-1",
+    }
+    assert blocked["status"] == "blocked"
+    assert "v5_leverage_must_be_set_separately" in {
+        check["code"] for check in blocked["checks"]
+    }
+
+
 def _install_router(monkeypatch, responses):
     http = RoutingHttp(responses)
     monkeypatch.setattr(server.client, "_http", http)

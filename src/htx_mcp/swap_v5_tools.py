@@ -11,6 +11,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Annotated, Any, Literal
 
+from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import Field
 
 from . import server
@@ -126,7 +127,7 @@ async def futures_v5_get_order(
     """Read one v5 order by exchange or client order ID so an accepted mutation can be reconciled."""
 
     if order_id is None and client_order_id is None:
-        raise ValueError("order_id or client_order_id is required")
+        raise ToolError("order_id or client_order_id is required")
     return await v5_get_order(
         contract_code,
         order_id=server._text(order_id, "order_id") if order_id else None,
@@ -135,7 +136,7 @@ async def futures_v5_get_order(
     )
 
 
-@server.mcp.tool(annotations=server.WRITE)
+@server.mcp.tool(annotations=server.WRITE, toolsets={"execution"})
 async def futures_v5_set_leverage(
     contract_code: server.ContractCode,
     margin_mode: server.MarginMode,

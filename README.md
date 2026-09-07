@@ -65,7 +65,9 @@ API 密钥建议只授予 Read；只有确实需要交易时才授予 Trade，�
 `/v5/trade/*` 和 `/v5/position/*`。旧的 `/linear-swap-api/v1`、`v3` 映射仍在
 `advanced` 工具集中供未迁移账户排障；不要把 v5 的 `margin_mode`、`type`、
 `time_in_force` 字段与旧版 `direction`、`offset`、`order_price_type` 混用。v5 杠杆是
-独立写操作，先调用 `futures_v5_set_leverage`，再提交订单。
+独立写操作，`futures_v5_set_leverage` 属于 `execution`（因此 `HTX_TOOLSETS=trading`
+可用）：先显式设置杠杆，再提交不带 `leverage` 的订单意图。订单意图的
+`position_side` 默认为 `both`，仅适合单向持仓；双向持仓须明确选择 `long` 或 `short`。
 
 HTTPX 默认读取进程的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 和 `NO_PROXY`。
 若代理端口同时提供 HTTP 与 SOCKS5，优先使用 `http://127.0.0.1:7897`；HTTPS

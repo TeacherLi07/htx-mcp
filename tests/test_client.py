@@ -204,6 +204,29 @@ def test_swap_mutation_can_be_disabled_while_spot_trading_remains_enabled():
     assert spot_permission is None
 
 
+def test_v5_swap_mutation_obeys_the_independent_swap_trading_gate():
+    client = HtxClient(
+        HtxConfig(
+            api_key="key",
+            api_secret="secret",
+            enable_trading=True,
+            enable_swap_trading=False,
+        ),
+        http=FakeHttp(),
+    )
+
+    preview = ensure_confirmation(
+        client,
+        tool_name="v5_submit_order",
+        confirm=True,
+        request={"path": "/v5/trade/order", "body": {}},
+    )
+
+    assert preview is not None
+    assert preview["dry_run"] is True
+    assert preview["reason"] == "HTX_ENABLE_SWAP_TRADING is not enabled on the server"
+
+
 def test_optional_environment_values_are_trimmed(monkeypatch):
     monkeypatch.setenv("HTX_TEST_VALUE", "  api-key-with-newline  ")
     assert _env_optional("HTX_TEST_VALUE") == "api-key-with-newline"

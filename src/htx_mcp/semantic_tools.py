@@ -99,7 +99,7 @@ IncludeRaw = Annotated[
 SemanticClientOrderId = Annotated[
     str | int,
     Field(
-        description="Product-specific client order ID: a 1-64 character identifier for spot, or a positive 64-bit integer for swaps."
+        description="Client order ID: spot accepts a 1-64 character identifier; v5 swaps also accept that form or a positive 64-bit integer, while legacy swaps require the integer form."
     ),
 ]
 
@@ -201,7 +201,9 @@ def _wire(value: Any) -> Any:
     return value
 
 
-def _client_order_id(product: str, value: str | int | None) -> str | int | None:
+def _client_order_id(
+    product: str, value: str | int | None, *, allow_v5_strings: bool = False
+) -> str | int | None:
     """Validate product-specific order IDs used outside TradeIntent."""
 
     if value is None:
@@ -214,15 +216,23 @@ def _client_order_id(product: str, value: str | int | None) -> str | int | None:
                 "spot client_order_id must contain 1-64 letters, digits, underscores, or hyphens"
             )
         return value
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int)
-        or not 1 <= value <= 9223372036854775807
+    if isinstance(value, int) and not isinstance(value, bool):
+        if 1 <= value <= 9223372036854775807:
+            return value
+    elif (
+        allow_v5_strings
+        and isinstance(value, str)
+        and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value)
     ):
+        return value
+    if allow_v5_strings:
+        raise ToolError(
+            "v5 swap client_order_id must be an integer or a 1-64 character identifier"
+        )
+    else:
         raise ToolError(
             "swap client_order_id must be an integer from 1 through 9223372036854775807"
         )
-    return value
 
 
 def _check(
@@ -576,6 +586,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                 contract_code=contract,
                 margin_mode=intent.margin_mode,
                 side=intent.side,
+                position_side=intent.position_side,
                 type=order_type,
                 volume=decimal_to_text(intent.quantity),
                 price=(
@@ -647,6 +658,28 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             else api._contract(intent.instrument)
         )
         checks: list[dict[str, str]] = []
+        if (
+            intent.product == "swap"
+            and api.client.config.swap_api_version == "v5"
+            and intent.leverage is not None
+        ):
+            _check(
+                checks,
+                "error",
+                "v5_leverage_must_be_set_separately",
+                "V5 leverage must be set with futures_v5_set_leverage before submitting this trade.",
+            )
+        if (
+            intent.product == "swap"
+            and api.client.config.swap_api_version == "legacy"
+            and isinstance(intent.client_order_id, str)
+        ):
+            _check(
+                checks,
+                "error",
+                "legacy_client_order_id_type",
+                "Legacy swap endpoints require an integer client_order_id.",
+            )
         if intent.product == "spot" and intent.action != "open":
             _check(
                 checks,
@@ -796,16 +829,6 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             intent.price if intent.order_kind != "market" else reference
         ) or reference
         if intent.product == "swap" and entry is not None:
-            if (
-                intent.leverage is not None
-                and api.client.config.swap_api_version == "v5"
-            ):
-                _check(
-                    checks,
-                    "warning",
-                    "v5_leverage_separate",
-                    "V5 sets leverage through futures_v5_set_leverage before submitting an order.",
-                )
             if intent.take_profit:
                 valid = (
                     intent.take_profit.trigger_price > entry
@@ -1488,7 +1511,13 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
 
         if not order_id and not client_order_id:
             raise ToolError("order_id or client_order_id is required")
-        client_order_id = _client_order_id(product, client_order_id)
+        client_order_id = _client_order_id(
+            product,
+            client_order_id,
+            allow_v5_strings=(
+                product == "swap" and api.client.config.swap_api_version == "v5"
+            ),
+        )
         if product == "spot":
             if client_order_id and not order_id:
                 payload = await api.spot_get_order_by_client_id(client_order_id)
@@ -1539,7 +1568,13 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
 
         if not order_id and not client_order_id:
             raise ToolError("order_id or client_order_id is required")
-        client_order_id = _client_order_id(product, client_order_id)
+        client_order_id = _client_order_id(
+            product,
+            client_order_id,
+            allow_v5_strings=(
+                product == "swap" and api.client.config.swap_api_version == "v5"
+            ),
+        )
         if product == "spot":
             if client_order_id and not order_id:
                 path = "/v1/order/orders/submitcancelclientorder"

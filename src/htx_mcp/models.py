@@ -275,9 +275,13 @@ class TradeIntent(BaseModel):
         default=False,
         description="Swap-only close protection. When true, the order cannot increase exposure.",
     )
+    position_side: Literal["long", "short", "both"] = Field(
+        default="both",
+        description="V5 swap position side. Use both for one-way mode; choose long or short for hedge mode.",
+    )
     client_order_id: str | int | None = Field(
         default=None,
-        description="Optional product-specific reconciliation ID: a 1-64 character identifier for spot, or an integer from 1 through 9223372036854775807 for swaps.",
+        description="Optional reconciliation ID: a 1-64 character identifier for spot; v5 swaps also accept a 1-64 character identifier or a positive 64-bit integer, while legacy swaps require the integer form.",
     )
     take_profit: ProtectionSpec | None = Field(
         default=None,
@@ -300,12 +304,15 @@ class TradeIntent(BaseModel):
                 raise ValueError(
                     "spot client_order_id must contain 1-64 letters, digits, underscores, or hyphens"
                 )
-        elif (
-            isinstance(value, bool)
-            or not isinstance(value, int)
-            or not 1 <= value <= 9223372036854775807
+        elif isinstance(value, int) and not isinstance(value, bool):
+            if not 1 <= value <= 9223372036854775807:
+                raise ValueError(
+                    "swap integer client_order_id must be from 1 through 9223372036854775807"
+                )
+        elif not isinstance(value, str) or not re.fullmatch(
+            r"[A-Za-z0-9_-]{1,64}", value
         ):
             raise ValueError(
-                "swap client_order_id must be an integer from 1 through 9223372036854775807"
+                "swap client_order_id must be an integer or a 1-64 character v5 identifier"
             )
         return self

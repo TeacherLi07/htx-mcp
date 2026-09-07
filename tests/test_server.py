@@ -235,7 +235,6 @@ def test_tool_metadata_describes_every_published_argument():
     for tool in tools:
         for schema in tool.input_schema.get("properties", {}).values():
             assert has_description(schema, tool.input_schema), tool.name
-
     batch_schema = next(
         tool for tool in tools if tool.name == "futures_place_batch_orders"
     )
@@ -283,6 +282,13 @@ def test_tool_metadata_describes_every_published_argument():
         "validation",
         "execution",
     }
+
+
+def test_v5_routes_to_the_derivatives_host():
+    assert (
+        server._base_url_for("/v5/account/balance")
+        == server.client.config.futures_base_url
+    )
 
 
 def test_trade_preflight_prompt_stays_read_only_and_uses_semantic_tools():
