@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0 - 2026-09-07
+
+- Store process and MCP tool-call logs in `~/.htxmcp/htx-mcp.log` instead of stderr.
+- Add cross-platform size-based rotation with uncompressed, unlimited retention.
+- Protect the log directory and active file with restrictive permissions where supported.
+- Add `HTX_LOG_DIR` and `HTX_LOG_MAX_BYTES` configuration.
+- Provide an Ubuntu logrotate template using `copytruncate`, `nocompress`, and `rotate -1`.
+
 ## 0.3.0 - 2026-09-07
 
 - Log every MCP tool input and structured result to stderr with correlated call IDs and durations.
