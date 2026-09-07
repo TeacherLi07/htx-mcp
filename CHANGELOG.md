@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.5 - 2026-09-07
+
+- Emit a support-ticket diagnostic from the standalone account-type switch script without exposing signed authentication query parameters.
+
 ## 0.5.4 - 2026-09-07
 
 - Add a standalone, separately credentialed and explicitly confirmed script for switching a U-margined account to the non-unified account type.

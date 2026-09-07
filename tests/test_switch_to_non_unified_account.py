@@ -6,6 +6,8 @@ SCRIPT = runpy.run_path(
     str(Path(__file__).parents[1] / "scripts" / "switch_to_non_unified_account.py")
 )
 switch_to_non_unified = SCRIPT["switch_to_non_unified"]
+DiagnosticClient = SCRIPT["DiagnosticClient"]
+HtxApiError = SCRIPT["HtxApiError"]
 
 
 class FakeClient:
@@ -15,7 +17,10 @@ class FakeClient:
 
     async def request(self, method, path, **kwargs):
         self.calls.append((method, path, kwargs))
-        return next(self.responses)
+        response = next(self.responses)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 def test_switch_requires_explicit_confirmation_for_unified_account():
@@ -62,3 +67,40 @@ def test_switch_changes_and_verifies_unified_account_type():
             "base_url": "https://futures.test",
         },
     )
+
+
+def test_diagnostics_include_response_json_without_authentication_material():
+    client = FakeClient(
+        [
+            HtxApiError(
+                "HTX API error: unavailable",
+                payload={"status": "error", "err_msg": "temporarily unavailable"},
+            )
+        ]
+    )
+    diagnostic_client = DiagnosticClient(client)
+
+    try:
+        asyncio.run(
+            diagnostic_client.request(
+                "POST",
+                "/linear-swap-api/v3/swap_switch_account_type",
+                body={"account_type": 1},
+                private=True,
+                base_url="https://futures.test",
+            )
+        )
+    except HtxApiError:
+        pass
+
+    assert diagnostic_client.events == [
+        {
+            "request": {
+                "method": "POST",
+                "url": "https://futures.test/linear-swap-api/v3/swap_switch_account_type",
+                "authenticated_query_parameters": "<redacted>",
+                "body": {"account_type": 1},
+            },
+            "response": {"status": "error", "err_msg": "temporarily unavailable"},
+        }
+    ]

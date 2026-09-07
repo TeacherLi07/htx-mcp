@@ -82,6 +82,9 @@ uv run python scripts/switch_to_non_unified_account.py
 uv run python scripts/switch_to_non_unified_account.py --confirm-switch-to-non-unified
 ```
 
+若 HTX 返回错误，可追加 `--diagnostics` 生成工单所需的脱敏请求端点、请求体和原始响应 JSON；
+认证查询参数不会输出。
+
 ### Codex
 
 将以下配置添加到用户级 `~/.codex/config.toml`，或受信任项目的

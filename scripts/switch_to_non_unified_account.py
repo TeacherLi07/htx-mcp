@@ -8,14 +8,20 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
+import re
 import sys
 from typing import Any
 
-from htx_mcp.client import HtxClient, HtxConfig, HtxError
+from htx_mcp.client import HtxApiError, HtxClient, HtxConfig, HtxError
 
 ACCOUNT_TYPE_PATH = "/linear-swap-api/v3/swap_unified_account_type"
 SWITCH_ACCOUNT_TYPE_PATH = "/linear-swap-api/v3/swap_switch_account_type"
+SENSITIVE_KEYS = {"accesskeyid", "api_key", "api_secret", "secret", "signature"}
+SENSITIVE_QUERY_VALUE = re.compile(
+    r"(?i)(accesskeyid|api[_-]?key|api[_-]?secret|secret|signature)=([^&\s]+)"
+)
 
 
 def _required_environment(name: str) -> str:
@@ -29,6 +35,54 @@ def _account_type(payload: dict[str, Any]) -> int | None:
     data = payload.get("data")
     value = data.get("account_type") if isinstance(data, dict) else None
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _redact(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: "<redacted>" if str(key).lower() in SENSITIVE_KEYS else _redact(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact(item) for item in value]
+    if isinstance(value, str):
+        return SENSITIVE_QUERY_VALUE.sub(r"\1=<redacted>", value)
+    return value
+
+
+class DiagnosticClient:
+    """Record sanitized request/response pairs without retaining signed URLs."""
+
+    def __init__(self, client: HtxClient):
+        self.client = client
+        self.events: list[dict[str, Any]] = []
+
+    async def request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+        base_url = str(kwargs["base_url"]).rstrip("/")
+        event: dict[str, Any] = {
+            "request": {
+                "method": method,
+                "url": f"{base_url}{path}",
+                "authenticated_query_parameters": "<redacted>",
+                "body": _redact(kwargs.get("body")),
+            }
+        }
+        try:
+            response = await self.client.request(method, path, **kwargs)
+        except HtxApiError as error:
+            event["response"] = _redact(
+                error.payload if error.payload is not None else {"message": str(error)}
+            )
+            self.events.append(event)
+            raise
+        event["response"] = _redact(response)
+        self.events.append(event)
+        return response
+
+
+def _print_diagnostics(events: list[dict[str, Any]]) -> None:
+    print("HTX support diagnostic (authentication query parameters are redacted):")
+    print(json.dumps(events, ensure_ascii=False, indent=2, default=str))
 
 
 async def switch_to_non_unified(
@@ -73,11 +127,17 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Actually send the account-type change request.",
     )
+    parser.add_argument(
+        "--diagnostics",
+        action="store_true",
+        help="Print sanitized request and response JSON for an HTX support ticket.",
+    )
     return parser.parse_args()
 
 
 async def main() -> int:
     args = parse_args()
+    diagnostic_client: DiagnosticClient | None = None
     try:
         config = HtxConfig(
             api_key=_required_environment("HTX_SWITCH_API_KEY"),
@@ -88,9 +148,10 @@ async def main() -> int:
             timeout_seconds=float(os.getenv("HTX_SWITCH_TIMEOUT_SECONDS", "20")),
         )
         client = HtxClient(config)
+        diagnostic_client = DiagnosticClient(client)
         try:
             result = await switch_to_non_unified(
-                client,
+                diagnostic_client,
                 futures_base_url=config.futures_base_url,
                 confirm=args.confirm_switch_to_non_unified,
             )
@@ -98,7 +159,12 @@ async def main() -> int:
             await client.close()
     except (HtxError, RuntimeError, ValueError) as error:
         print(f"Switch failed: {type(error).__name__}: {error}", file=sys.stderr)
+        if diagnostic_client is not None:
+            _print_diagnostics(diagnostic_client.events)
         return 1
+
+    if args.diagnostics:
+        _print_diagnostics(diagnostic_client.events)
 
     status = result["status"]
     if status == "confirmation_required":
