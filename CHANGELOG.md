@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.2 - 2026-09-07
+
+- Return partial account snapshots with field-level warnings when an independent private endpoint fails.
+- Block semantic trade validation when HTX instrument rules or a current ticker price cannot be retrieved.
+- Reject malformed HTX JSON envelopes consistently and avoid exposing transport URLs in API errors.
+- Document a read-only Codex MCP configuration that forwards credentials without storing them in TOML.
+
 ## 0.5.1 - 2026-09-07
 
 - Enforce market-wait deadlines across in-flight HTX requests.

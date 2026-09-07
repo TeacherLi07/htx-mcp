@@ -66,6 +66,27 @@ HTTPX 默认读取进程的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 和 `NO_P
 
 ## MCP 客户端接入
 
+### Codex
+
+将以下配置添加到用户级 `~/.codex/config.toml`，或受信任项目的
+`.codex/config.toml`。先在启动 Codex 的本地环境中设置 `HTX_API_KEY` 和
+`HTX_API_SECRET`；`env_vars` 会将它们转发给 MCP 进程，因此不必把 Secret 写入
+TOML 文件。
+
+```toml
+[mcp_servers.htx]
+command = "uv"
+args = ["run", "htx-mcp"]
+cwd = "F:/htxauto"
+env = { HTX_ENABLE_TRADING = "false", HTX_TOOLSETS = "analysis,planning,ops" }
+env_vars = ["HTX_API_KEY", "HTX_API_SECRET"]
+```
+
+此配置只发布语义化的分析、规划和诊断工具；即使工具调用传入 `confirm=true`，也只会
+返回 dry-run。完成配置后重启 Codex，并在 TUI 中使用 `/mcp` 检查 `htx` 是否已连接。
+需要交易面时，应使用单独的受限执行进程，并显式配置 `HTX_TOOLSETS="trading"` 和
+`HTX_ENABLE_TRADING="true"`。
+
 stdio 是桌面 MCP 客户端最简单的传输方式。Windows 上可使用绝对路径：
 
 ```json

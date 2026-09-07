@@ -5,7 +5,10 @@ import hmac
 from decimal import Decimal
 from urllib.parse import parse_qs, urlsplit
 
+import pytest
+
 from htx_mcp.client import (
+    HtxApiError,
     HtxClient,
     HtxConfig,
     _canonical_query,
@@ -100,6 +103,35 @@ def test_private_post_keeps_business_fields_in_json_body():
     query = parse_qs(urlsplit(url).query)
     assert "contract_code" not in query
     assert kwargs["json"] == {"contract_code": "BTC-USDT"}
+
+
+def test_malformed_json_envelope_raises_a_sanitized_api_error():
+    class MalformedHttp(FakeHttp):
+        async def request(self, method, url, **kwargs):
+            return FakeResponse(["not", "an", "HTX envelope"])
+
+    client = HtxClient(HtxConfig(), http=MalformedHttp())
+
+    with pytest.raises(HtxApiError, match="malformed JSON envelope"):
+        asyncio.run(client.request("GET", "/v1/test"))
+
+
+def test_http_error_does_not_echo_sensitive_response_data():
+    class ErrorHttp(FakeHttp):
+        async def request(self, method, url, **kwargs):
+            response = FakeResponse(
+                {"message": "https://example.test/?AccessKeyId=key&Signature=secret"}
+            )
+            response.status_code = 401
+            return response
+
+    client = HtxClient(HtxConfig(), http=ErrorHttp())
+
+    with pytest.raises(HtxApiError) as error:
+        asyncio.run(client.request("GET", "/v1/test"))
+
+    assert "AccessKeyId" not in str(error.value)
+    assert "Signature" not in str(error.value)
 
 
 def test_decimal_business_fields_are_sent_as_exact_fixed_point_strings():

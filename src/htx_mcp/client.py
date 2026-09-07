@@ -68,6 +68,23 @@ def _json_ready(value: Any) -> Any:
     return value
 
 
+def _api_error_message(payload: Mapping[str, Any], fallback: str) -> str:
+    """Extract a display-safe HTX error message from an API envelope."""
+
+    for key in ("err_msg", "message", "msg"):
+        value = payload.get(key)
+        if (
+            isinstance(value, str)
+            and value.strip()
+            and not any(
+                marker in value.lower()
+                for marker in ("accesskeyid=", "signature=", "api_secret=")
+            )
+        ):
+            return value
+    return fallback
+
+
 @dataclass(frozen=True)
 class HtxConfig:
     """Runtime configuration loaded from environment variables."""
@@ -244,7 +261,7 @@ class HtxClient:
         try:
             response = await self._http.request(method, url, **request_kwargs)
         except httpx.HTTPError as exc:
-            raise HtxApiError(f"HTX request failed: {exc}") from exc
+            raise HtxApiError(f"HTX request failed with {type(exc).__name__}") from exc
 
         try:
             payload = response.json()
@@ -254,32 +271,29 @@ class HtxClient:
                 status_code=response.status_code,
             ) from exc
 
-        if response.status_code >= 400:
+        if not isinstance(payload, dict):
             raise HtxApiError(
-                f"HTX HTTP error {response.status_code}: {payload}",
+                f"HTX returned a malformed JSON envelope (HTTP {response.status_code})",
                 payload=payload,
                 status_code=response.status_code,
             )
 
-        status = (
-            str(payload.get("status", "")).lower() if isinstance(payload, dict) else ""
-        )
-        code = payload.get("code") if isinstance(payload, dict) else None
-        if status not in {"", "ok", "success"}:
-            message = (
-                payload.get("err_msg")
-                or payload.get("message")
-                or payload.get("msg")
-                or payload
+        if response.status_code >= 400:
+            raise HtxApiError(
+                "HTX HTTP error "
+                f"{response.status_code}: "
+                f"{_api_error_message(payload, 'HTX rejected the request')}",
+                payload=payload,
+                status_code=response.status_code,
             )
+
+        status = str(payload.get("status", "")).lower()
+        code = payload.get("code")
+        if status not in {"", "ok", "success"}:
+            message = _api_error_message(payload, "HTX rejected the request")
             raise HtxApiError(f"HTX API error: {message}", payload=payload)
         if code not in {None, 200, "200", 0, "0"}:
-            message = (
-                payload.get("err_msg")
-                or payload.get("message")
-                or payload.get("msg")
-                or payload
-            )
+            message = _api_error_message(payload, "HTX rejected the request")
             raise HtxApiError(f"HTX API error {code}: {message}", payload=payload)
         return payload
 

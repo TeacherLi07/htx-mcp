@@ -337,9 +337,10 @@ def test_market_wait_enforces_its_deadline_while_a_market_call_is_slow(monkeypat
 def test_market_wait_tool_warns_that_it_hides_intermediate_market_updates():
     tools = asyncio.run(mcp.list_tools())
     wait_tool = next(tool for tool in tools if tool.name == "htx_wait_for_market_event")
+    description = " ".join(wait_tool.description.split())
 
-    assert "no intermediate\nmarket updates" in wait_tool.description
-    assert "then re-check market snapshots after every return" in wait_tool.description
+    assert "no intermediate market updates" in description
+    assert "then re-check market snapshots after every return" in description
 
 
 def test_market_wait_returns_timeout_without_a_matching_condition(monkeypatch):
@@ -510,6 +511,95 @@ def test_account_snapshot_reports_product_dependent_fields(monkeypatch):
     assert swap["warnings"] == [
         "open_orders: instrument is required for swap account snapshots"
     ]
+
+
+def test_account_snapshot_returns_partial_data_when_private_sections_fail(monkeypatch):
+    balances = [{"margin_account": "USDT", "margin_balance": "1000"}]
+    orders = [{"contract_code": "BTC-USDT", "volume": "2"}]
+    _install_router(
+        monkeypatch,
+        {
+            "/linear-swap-api/v1/swap_cross_account_info": _ok(balances),
+            "/linear-swap-api/v1/swap_cross_position_info": {
+                "status": "error",
+                "err_msg": "position service temporarily unavailable",
+            },
+            "/linear-swap-api/v1/swap_cross_openorders": _ok(orders),
+            "/linear-swap-api/v1/swap_api_trading_status": {
+                "status": "error",
+                "err_msg": "status service temporarily unavailable",
+            },
+        },
+    )
+
+    snapshot = asyncio.run(
+        mcp.call_tool(
+            "htx_get_account_snapshot",
+            {
+                "product": "swap",
+                "instrument": "BTC-USDT",
+                "margin_mode": "cross",
+                "include": ["balances", "positions", "open_orders", "api_status"],
+                "include_raw": True,
+            },
+        )
+    )
+
+    assert snapshot.is_error is False
+    result = snapshot.structured_content
+    assert result["balances"] == balances
+    assert result["open_orders"] == orders
+    assert "positions" not in result
+    assert "api_status" not in result
+    assert result["warnings"] == [
+        "positions: HtxApiError: HTX API error: position service temporarily unavailable",
+        "api_status: HtxApiError: HTX API error: status service temporarily unavailable",
+    ]
+    assert result["raw"] == {"balances": _ok(balances), "open_orders": _ok(orders)}
+
+
+def test_trade_validation_blocks_when_rules_or_ticker_are_unavailable(monkeypatch):
+    _install_router(
+        monkeypatch,
+        {
+            "/linear-swap-api/v1/swap_contract_info": {
+                "status": "error",
+                "err_msg": "rules service temporarily unavailable",
+            },
+            "/linear-swap-ex/market/detail/merged": {
+                "status": "ok",
+                "tick": {},
+            },
+            "/linear-swap-ex/market/depth": {
+                "status": "ok",
+                "tick": {"bids": [], "asks": []},
+            },
+            "/linear-swap-api/v1/swap_price_limit": _ok([]),
+        },
+    )
+
+    validation = asyncio.run(
+        mcp.call_tool(
+            "htx_validate_trade_intent",
+            {
+                "intent": {
+                    "product": "swap",
+                    "instrument": "BTC-USDT",
+                    "side": "buy",
+                    "order_kind": "market",
+                    "quantity": "1",
+                }
+            },
+        )
+    )
+
+    assert validation.is_error is False
+    result = validation.structured_content
+    assert result["status"] == "blocked"
+    assert {check["code"] for check in result["checks"]} == {
+        "instrument_rules_unavailable",
+        "market_price_unavailable",
+    }
 
 
 def test_trade_preview_request_matches_low_level_order_request(monkeypatch):

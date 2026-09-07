@@ -415,42 +415,58 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             "warnings": [],
         }
         raw: dict[str, Any] = {}
+
+        async def collect(calls: dict[str, Any]) -> None:
+            """Return every independently-readable account section available."""
+
+            responses = await asyncio.gather(*calls.values(), return_exceptions=True)
+            for field, response in zip(calls, responses):
+                if isinstance(response, Exception):
+                    result["warnings"].append(
+                        f"{field}: {type(response).__name__}: {response}"
+                    )
+                    continue
+                raw[field] = response
+                result[field] = _data(response)
+
         if product == "spot":
             unsupported = fields.intersection({"positions", "api_status"})
             result["warnings"].extend(
                 f"{field}: field is only supported for swap account snapshots"
                 for field in sorted(unsupported)
             )
-            account_id = await api._resolve_spot_account_id(None)
+            try:
+                account_id = await api._resolve_spot_account_id(None)
+            except (api.HtxError, ToolError) as exc:
+                result["warnings"].append(f"account_id: {type(exc).__name__}: {exc}")
+                if include_raw:
+                    result["raw"] = raw
+                return result
             result["account_id"] = account_id
+            calls: dict[str, Any] = {}
             if "balances" in fields:
-                raw["balances"] = await api.spot_get_account_balance(account_id)
-                result["balances"] = _data(raw["balances"])
+                calls["balances"] = api.spot_get_account_balance(account_id)
             if "open_orders" in fields:
-                raw["open_orders"] = await api.spot_get_open_orders(
+                calls["open_orders"] = api.spot_get_open_orders(
                     account_id, api._symbol(instrument) if instrument else None
                 )
-                result["open_orders"] = _data(raw["open_orders"])
+            await collect(calls)
         else:
             code = api._contract(instrument) if instrument else None
+            calls = {}
             if "balances" in fields:
-                raw["balances"] = await api.futures_get_account_info(margin_mode, code)
-                result["balances"] = _data(raw["balances"])
+                calls["balances"] = api.futures_get_account_info(margin_mode, code)
             if "positions" in fields:
-                raw["positions"] = await api.futures_get_positions(margin_mode, code)
-                result["positions"] = _data(raw["positions"])
+                calls["positions"] = api.futures_get_positions(margin_mode, code)
             if "open_orders" in fields and code:
-                raw["open_orders"] = await api.futures_get_open_orders(
-                    code, margin_mode
-                )
-                result["open_orders"] = _data(raw["open_orders"])
+                calls["open_orders"] = api.futures_get_open_orders(code, margin_mode)
             elif "open_orders" in fields:
                 result["warnings"].append(
                     "open_orders: instrument is required for swap account snapshots"
                 )
             if "api_status" in fields:
-                raw["api_status"] = await api.futures_get_api_trading_status()
-                result["api_status"] = _data(raw["api_status"])
+                calls["api_status"] = api.futures_get_api_trading_status()
+            await collect(calls)
         if include_raw:
             result["raw"] = raw
         return result
@@ -576,9 +592,26 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                 "missing_price",
                 "A non-market order requires an exact decimal price.",
             )
-        rules = await fetch_rules(intent.product, instrument)
+        rules_unavailable = False
+        try:
+            rules = await fetch_rules(intent.product, instrument)
+        except api.HtxError as exc:
+            rules_unavailable = True
+            rules = {
+                "product": intent.product,
+                "instrument": instrument,
+                "matched": None,
+                "rules": None,
+                "available_count": 0,
+            }
+            _check(
+                checks,
+                "error",
+                "instrument_rules_unavailable",
+                f"Could not retrieve HTX instrument rules: {type(exc).__name__}: {exc}",
+            )
         rule = rules.get("matched")
-        if rule is None:
+        if rule is None and not rules_unavailable:
             _check(
                 checks,
                 "error",
@@ -670,7 +703,12 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                 str(market.get("data", {}).get("ticker", {}).get("last"))
             )
         except (InvalidOperation, TypeError, ValueError):
-            pass
+            _check(
+                checks,
+                "error",
+                "market_price_unavailable",
+                "Could not retrieve a current HTX ticker price for pre-trade validation.",
+            )
         entry = (
             intent.price if intent.order_kind != "market" else reference
         ) or reference
