@@ -1,4 +1,9 @@
 import asyncio
+import json
+import logging
+import os
+import subprocess
+import sys
 from dataclasses import replace
 from importlib.metadata import version
 from urllib.parse import urlsplit
@@ -7,8 +12,7 @@ import anyio
 import pytest
 from mcp import ClientSession
 
-import htx_mcp.server as server
-from htx_mcp import __version__
+from htx_mcp import __version__, server
 from htx_mcp.server import mcp
 
 
@@ -78,7 +82,7 @@ def test_server_registers_full_tool_surface():
     tools = asyncio.run(mcp.list_tools())
     names = {tool.name for tool in tools}
     assert len(names) >= 50
-    for expected in {
+    for expected in (
         "spot_get_ticker",
         "spot_place_order",
         "futures_get_contracts",
@@ -87,13 +91,92 @@ def test_server_registers_full_tool_surface():
         "futures_cancel_all_orders",
         "futures_place_trigger_order",
         "htx_diagnose_private_access",
-    }:
+    ):
         assert expected in names
 
 
 def test_package_and_server_versions_stay_in_sync():
     assert version("htx-official-api-mcp") == __version__
     assert mcp.version == __version__
+
+
+def test_log_level_configuration_is_platform_independent():
+    assert server._configured_log_level(" debug ") == "DEBUG"
+    assert server._configured_log_level("warning") == "WARNING"
+    with pytest.raises(ValueError, match="HTX_LOG_LEVEL"):
+        server._configured_log_level("verbose")
+
+
+def test_tool_calls_log_redacted_inputs_and_structured_outputs(caplog):
+    caplog.set_level(logging.INFO, logger=server.__name__)
+
+    asyncio.run(
+        mcp.call_tool(
+            "spot_cancel_order",
+            {"order_id": "123"},
+        )
+    )
+
+    events = [
+        json.loads(record.message)
+        for record in caplog.records
+        if record.name == server.__name__ and record.message.startswith("{")
+    ]
+    input_event = next(event for event in events if event["event"] == "tool_input")
+    output_event = next(event for event in events if event["event"] == "tool_output")
+    assert input_event["call_id"] == output_event["call_id"]
+    assert input_event["input"] == {"order_id": "123"}
+    assert output_event["output"]["is_error"] is False
+    assert output_event["output"]["structured_content"]["dry_run"] is True
+    assert output_event["duration_ms"] >= 0
+
+
+def test_tool_log_redaction_removes_credentials_and_signed_query_values():
+    redacted = server._redact_log_value(
+        {
+            "api_secret": "secret-sentinel",
+            "nested": {"Authorization": "bearer-sentinel"},
+            "message": (
+                "https://example.test/path?AccessKeyId=key-sentinel"
+                "&Signature=signature-sentinel"
+            ),
+        }
+    )
+    serialized = json.dumps(redacted)
+
+    assert "secret-sentinel" not in serialized
+    assert "bearer-sentinel" not in serialized
+    assert "key-sentinel" not in serialized
+    assert "signature-sentinel" not in serialized
+    assert serialized.count("<redacted>") == 4
+
+
+def test_environment_log_level_controls_success_events_in_subprocess():
+    script = (
+        "import asyncio; from htx_mcp.server import mcp; "
+        "asyncio.run(mcp.call_tool('spot_cancel_order', {'order_id': '123'}))"
+    )
+    base_env = {**os.environ, "HTX_TOOLSETS": "all"}
+
+    info = subprocess.run(
+        [sys.executable, "-c", script],
+        env={**base_env, "HTX_LOG_LEVEL": "INFO"},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    warning = subprocess.run(
+        [sys.executable, "-c", script],
+        env={**base_env, "HTX_LOG_LEVEL": "WARNING"},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert '"event":"tool_input"' in info.stderr
+    assert '"event":"tool_output"' in info.stderr
+    assert '"event":"tool_input"' not in warning.stderr
+    assert '"event":"tool_output"' not in warning.stderr
 
 
 def test_toolsets_can_publish_only_the_selected_semantic_layer(monkeypatch):

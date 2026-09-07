@@ -10,8 +10,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 import time
+import uuid
+from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
 from typing import Annotated, Any, Literal
 
@@ -33,14 +36,97 @@ from .precision import decimal_to_text
 from .semantic_tools import register_semantic_tools
 
 logger = logging.getLogger(__name__)
+
+
+def _configured_log_level(value: str | None = None) -> str:
+    """Return a portable stdlib logging level from HTX_LOG_LEVEL."""
+
+    level = value if value is not None else os.getenv("HTX_LOG_LEVEL", "INFO")
+    level = level.strip().upper()
+    allowed = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+    if level not in allowed:
+        raise ValueError(
+            "HTX_LOG_LEVEL must be DEBUG, INFO, WARNING, ERROR, or CRITICAL"
+        )
+    return level
+
+
+LOG_LEVEL = _configured_log_level()
 logging.basicConfig(
-    level=os.getenv("HTX_LOG_LEVEL", "INFO"), format="%(levelname)s %(message)s"
+    level=LOG_LEVEL,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
+logger.setLevel(LOG_LEVEL)
 # httpx's INFO log contains the signed URL (including AccessKeyId and
 # Signature). Keep transport diagnostics off by default so credentials never
 # leak into the MCP host's stderr log.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+_SENSITIVE_LOG_KEYS = {
+    "accesskeyid",
+    "api_key",
+    "api_secret",
+    "authorization",
+    "password",
+    "secret",
+    "signature",
+    "token",
+}
+_SENSITIVE_QUERY_VALUE = re.compile(
+    r"(?i)(accesskeyid|api[_-]?key|api[_-]?secret|authorization|password|secret|signature|token)=([^&\s]+)"
+)
+
+
+def _redact_log_value(value: Any) -> Any:
+    """Convert a value to JSON-safe data while removing authentication material."""
+
+    if hasattr(value, "model_dump"):
+        value = value.model_dump(mode="json", by_alias=True, exclude_none=True)
+    if isinstance(value, Mapping):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            name = str(key)
+            normalized = name.lower().replace("-", "_")
+            redacted[name] = (
+                "<redacted>"
+                if normalized in _SENSITIVE_LOG_KEYS
+                or normalized.endswith(("_secret", "_token"))
+                else _redact_log_value(item)
+            )
+        return redacted
+    if isinstance(value, (list, tuple)):
+        return [_redact_log_value(item) for item in value]
+    if isinstance(value, Decimal):
+        return decimal_to_text(value)
+    if isinstance(value, str):
+        return _SENSITIVE_QUERY_VALUE.sub(r"\1=<redacted>", value)
+    if value is None or isinstance(value, bool | int | float):
+        return value
+    return str(value)
+
+
+def _log_tool_event(event: str, **fields: Any) -> None:
+    """Write one compact JSON event to stderr through the configured logger."""
+
+    payload = {"event": event, **fields}
+    logger.info(
+        json.dumps(
+            _redact_log_value(payload), ensure_ascii=False, separators=(",", ":")
+        )
+    )
+
+
+def _tool_result_for_log(result: Any) -> Any:
+    """Prefer the non-duplicated structured result when the SDK provides one."""
+
+    structured = getattr(result, "structured_content", None)
+    if structured is not None:
+        return {
+            "is_error": bool(getattr(result, "is_error", False)),
+            "structured_content": structured,
+        }
+    return result
 
 
 def _human_tool_title(function_name: str) -> str:
@@ -91,10 +177,52 @@ class HtxMcpServer(MCPServer):
 
         return register
 
+    async def call_tool(
+        self, name: str, arguments: dict[str, Any], context: Any = None
+    ) -> Any:
+        """Log every external tool invocation and its result at the MCP boundary."""
+
+        call_id = uuid.uuid4().hex
+        started = time.perf_counter()
+        if logger.isEnabledFor(logging.INFO):
+            _log_tool_event("tool_input", call_id=call_id, tool=name, input=arguments)
+        try:
+            result = await super().call_tool(name, arguments, context)
+        except Exception as exc:
+            logger.error(
+                json.dumps(
+                    _redact_log_value(
+                        {
+                            "event": "tool_error",
+                            "call_id": call_id,
+                            "tool": name,
+                            "duration_ms": round(
+                                (time.perf_counter() - started) * 1000, 3
+                            ),
+                            "error_type": type(exc).__name__,
+                            "error": str(exc),
+                        }
+                    ),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            )
+            raise
+        if logger.isEnabledFor(logging.INFO):
+            _log_tool_event(
+                "tool_output",
+                call_id=call_id,
+                tool=name,
+                duration_ms=round((time.perf_counter() - started) * 1000, 3),
+                output=_tool_result_for_log(result),
+            )
+        return result
+
 
 mcp = HtxMcpServer(
     name="htx-official-api",
     version=__version__,
+    log_level=LOG_LEVEL,
     description="HTX official REST API tools for market data, account inspection, and guarded trading.",
     instructions=(
         "Use read-only tools to inspect live state and contract rules before trading. Prefer readable enum "
@@ -483,7 +611,7 @@ def _text(value: str | None, name: str) -> str:
     return result
 
 
-def _positive_number(value: Decimal | float | int, name: str) -> Decimal:
+def _positive_number(value: Decimal | float, name: str) -> Decimal:
     """Validate and normalize a monetary/quantity value without binary floats."""
 
     try:
@@ -495,7 +623,7 @@ def _positive_number(value: Decimal | float | int, name: str) -> Decimal:
     return decimal_value
 
 
-def _decimal_text(value: Decimal | float | int) -> str:
+def _decimal_text(value: Decimal | float) -> str:
     """Return an exact fixed-point representation suitable for HTX JSON bodies."""
 
     return decimal_to_text(_positive_number(value, "decimal value"))
@@ -638,7 +766,7 @@ def _json(value: Any) -> str:
 def _base_url_for(path: str) -> str:
     """Route derivatives to HTX's derivatives host and spot calls to spot host."""
 
-    if path.startswith("/linear-") or path.startswith("/index/"):
+    if path.startswith(("/linear-", "/index/")):
         return client.config.futures_base_url
     return client.config.base_url
 
@@ -859,6 +987,7 @@ def configuration_resource() -> str:
             "futures_api_base_url": client.config.futures_base_url,
             "credentials_configured": client.credentials_configured,
             "trading_enabled": client.config.enable_trading,
+            "log_level": LOG_LEVEL,
             "toolsets": os.getenv("HTX_TOOLSETS")
             or "analysis,planning,ops (semantic default)",
             "spot_account_id_configured": bool(client.config.spot_account_id),
@@ -974,10 +1103,10 @@ def _v3_margin_account(
 
 
 # ---------------------------------------------------------------------------
-from . import spot_tools as _spot_tools  # noqa: E402
-from . import swap_account_tools as _swap_account_tools  # noqa: E402
-from . import swap_market_tools as _swap_market_tools  # noqa: E402
-from . import swap_trading_tools as _swap_trading_tools  # noqa: E402
+from . import spot_tools as _spot_tools
+from . import swap_account_tools as _swap_account_tools
+from . import swap_market_tools as _swap_market_tools
+from . import swap_trading_tools as _swap_trading_tools
 
 for _tool_module in (
     _spot_tools,
