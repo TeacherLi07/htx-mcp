@@ -5,7 +5,7 @@ import anyio
 import pytest
 from mcp import ClientSession
 
-import htx_mcp.server as server
+from htx_mcp import server
 
 
 class FakeResponse:

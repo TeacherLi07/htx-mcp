@@ -9,7 +9,6 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, Field, model_validator
 from typing_extensions import NotRequired, TypedDict
 
-
 DecimalAmount = Annotated[
     Decimal,
     Field(
@@ -210,7 +209,7 @@ class TradeIntent(BaseModel):
     )
 
     @model_validator(mode="after")
-    def validate_client_order_id(self) -> "TradeIntent":
+    def validate_client_order_id(self) -> TradeIntent:
         value = self.client_order_id
         if value is None:
             return self

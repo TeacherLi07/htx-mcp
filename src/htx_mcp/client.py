@@ -12,10 +12,11 @@ import base64
 import hashlib
 import hmac
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Mapping
+from typing import Any
 from urllib.parse import quote, urlsplit
 
 import httpx
@@ -80,7 +81,7 @@ class HtxConfig:
     spot_account_id: str | None = None
 
     @classmethod
-    def from_env(cls) -> "HtxConfig":
+    def from_env(cls) -> HtxConfig:
         timeout_raw = os.getenv("HTX_TIMEOUT_SECONDS", "20")
         try:
             timeout = max(1.0, float(timeout_raw))
@@ -142,7 +143,7 @@ def sign_request(
     """Return a base64 HMAC-SHA256 signature for a normalized HTX request."""
 
     normalized = _canonical_query(params)
-    payload = "\n".join((method.upper(), host, path, normalized)).encode("utf-8")
+    payload = f"{method.upper()}\n{host}\n{path}\n{normalized}".encode()
     digest = hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).digest()
     return base64.b64encode(digest).decode("ascii")
 

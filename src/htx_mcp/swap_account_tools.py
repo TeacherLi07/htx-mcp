@@ -341,13 +341,13 @@ async def futures_get_financial_records(
 
 __all__ = [
     "futures_get_account_info",
-    "futures_get_positions",
     "futures_get_account_position_info",
     "futures_get_available_leverage",
-    "futures_get_open_orders",
-    "futures_get_order_info",
-    "futures_get_order_detail",
+    "futures_get_financial_records",
     "futures_get_history_orders",
     "futures_get_match_results",
-    "futures_get_financial_records",
+    "futures_get_open_orders",
+    "futures_get_order_detail",
+    "futures_get_order_info",
+    "futures_get_positions",
 ]

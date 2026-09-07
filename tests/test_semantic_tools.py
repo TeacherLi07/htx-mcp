@@ -4,7 +4,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
-import htx_mcp.server as server
+from htx_mcp import server
 from htx_mcp.server import mcp
 
 

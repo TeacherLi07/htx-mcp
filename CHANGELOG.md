@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0 - 2026-09-07
+
+- Log every MCP tool input and structured result to stderr with correlated call IDs and durations.
+- Redact credentials, authorization values, tokens, passwords, signatures, and signed-query values.
+- Allow `HTX_LOG_LEVEL` to control successful and failed call logging with validated standard levels.
+- Add Windows and Ubuntu CI coverage on Python 3.10 and 3.13.
+- Lock Ruff as a development dependency so clean environments run the same lint checks.
+- Document installation, client configuration, logging, and security guidance for both operating systems.
+
 ## 0.2.0 - 2026-09-06
 
 - Restore the documented spot `client-order-id` request field for placement and cancellation.

@@ -77,7 +77,7 @@ async def futures_get_depth(
     ``depth_type`` selects HTX's aggregation level from step0 through step19. This is public market data.
     """
 
-    allowed = {f"step{i}" for i in range(0, 20)}
+    allowed = {f"step{i}" for i in range(20)}
     if depth_type not in allowed:
         raise ToolError("depth_type must be a supported HTX step0..step19 value")
     return await server._public(
@@ -365,21 +365,21 @@ async def futures_get_elite_ratios(
 
 
 __all__ = [
+    "futures_get_api_state",
+    "futures_get_batch_funding_rate",
     "futures_get_contracts",
+    "futures_get_depth",
+    "futures_get_elite_ratios",
+    "futures_get_funding_rate",
+    "futures_get_historical_funding_rate",
+    "futures_get_index",
+    "futures_get_insurance_fund",
+    "futures_get_klines",
+    "futures_get_liquidation_orders",
+    "futures_get_open_interest",
+    "futures_get_price_limit",
+    "futures_get_recent_trades",
+    "futures_get_risk_info",
     "futures_get_ticker",
     "futures_get_tickers",
-    "futures_get_depth",
-    "futures_get_klines",
-    "futures_get_recent_trades",
-    "futures_get_index",
-    "futures_get_price_limit",
-    "futures_get_open_interest",
-    "futures_get_funding_rate",
-    "futures_get_batch_funding_rate",
-    "futures_get_historical_funding_rate",
-    "futures_get_api_state",
-    "futures_get_risk_info",
-    "futures_get_insurance_fund",
-    "futures_get_liquidation_orders",
-    "futures_get_elite_ratios",
 ]

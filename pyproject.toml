@@ -1,6 +1,6 @@
 [project]
 name = "htx-official-api-mcp"
-version = "0.2.0"
+version = "0.3.0"
 description = "Full-featured MCP server for HTX official REST APIs"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -18,6 +18,7 @@ package = true
 [dependency-groups]
 dev = [
   "pytest>=8.0.0",
+  "ruff>=0.12.0",
 ]
 
 [tool.pytest.ini_options]

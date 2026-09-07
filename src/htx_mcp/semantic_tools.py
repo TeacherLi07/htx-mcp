@@ -39,7 +39,6 @@ from .models import (
 )
 from .precision import decimal_to_text
 
-
 Product = Annotated[
     Literal["spot", "swap"],
     Field(description="HTX product family: spot or USDT-margined perpetual swap."),
