@@ -32,34 +32,18 @@ from .client import (
     HtxError,  # noqa: F401 - re-exported for low-level tool modules and callers
     ensure_confirmation,
 )
+from .logging_config import (
+    LOG_LEVEL,
+    LOG_MAX_BYTES,
+    LOG_PATH,
+)
 from .precision import decimal_to_text
 from .semantic_tools import register_semantic_tools
 
 logger = logging.getLogger(__name__)
-
-
-def _configured_log_level(value: str | None = None) -> str:
-    """Return a portable stdlib logging level from HTX_LOG_LEVEL."""
-
-    level = value if value is not None else os.getenv("HTX_LOG_LEVEL", "INFO")
-    level = level.strip().upper()
-    allowed = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
-    if level not in allowed:
-        raise ValueError(
-            "HTX_LOG_LEVEL must be DEBUG, INFO, WARNING, ERROR, or CRITICAL"
-        )
-    return level
-
-
-LOG_LEVEL = _configured_log_level()
-logging.basicConfig(
-    level=LOG_LEVEL,
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
-)
 logger.setLevel(LOG_LEVEL)
-# httpx's INFO log contains the signed URL (including AccessKeyId and
-# Signature). Keep transport diagnostics off by default so credentials never
-# leak into the MCP host's stderr log.
+# httpx's INFO log contains signed URLs. Keep transport diagnostics at WARNING;
+# all enabled process logs use the same protected file handler.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
@@ -107,7 +91,7 @@ def _redact_log_value(value: Any) -> Any:
 
 
 def _log_tool_event(event: str, **fields: Any) -> None:
-    """Write one compact JSON event to stderr through the configured logger."""
+    """Write one compact JSON event to the configured rotating log file."""
 
     payload = {"event": event, **fields}
     logger.info(
@@ -988,6 +972,9 @@ def configuration_resource() -> str:
             "credentials_configured": client.credentials_configured,
             "trading_enabled": client.config.enable_trading,
             "log_level": LOG_LEVEL,
+            "log_path": str(LOG_PATH),
+            "log_max_bytes": LOG_MAX_BYTES,
+            "log_retention": "unlimited-uncompressed",
             "toolsets": os.getenv("HTX_TOOLSETS")
             or "analysis,planning,ops (semantic default)",
             "spot_account_id_configured": bool(client.config.spot_account_id),

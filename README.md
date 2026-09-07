@@ -49,7 +49,9 @@ uv run pytest -q
 | `HTX_ENABLE_TRADING` | `false` | 是否允许写接口真正发往 HTX；`false` 时所有写工具只返回 dry-run |
 | `HTX_TOOLSETS` | `analysis,planning,ops` | 工具集 allow-list：`analysis`、`planning`、`execution`、`advanced`、`ops`；`core` 等价于 analysis+planning，`trading` 等价于 analysis+planning+execution，`all` 发布完整兼容层 |
 | `MCP_TRANSPORT` | `stdio` | `stdio`、`sse` 或 `streamable-http` |
-| `HTX_LOG_LEVEL` | `INFO` | stderr 日志级别：`DEBUG`、`INFO`、`WARNING`、`ERROR` 或 `CRITICAL` |
+| `HTX_LOG_LEVEL` | `INFO` | 文件日志级别：`DEBUG`、`INFO`、`WARNING`、`ERROR` 或 `CRITICAL` |
+| `HTX_LOG_DIR` | `~/.htxmcp` | 日志目录；支持 Windows 和 Ubuntu 路径以及 `~` 展开 |
+| `HTX_LOG_MAX_BYTES` | `10485760` | 活动日志达到该字节数后滚动；设为 `0` 可交给外部 logrotate |
 | `HTTP_PROXY` / `HTTPS_PROXY` | 空 | 显式 HTTP CONNECT 代理 URL，例如 `http://127.0.0.1:7897` |
 | `NO_PROXY` | 继承环境 | 不经过代理的 Host；为强制 HTX 走代理可设为空字符串 |
 
@@ -87,7 +89,8 @@ stdio 是桌面 MCP 客户端最简单的传输方式。Windows 上可使用绝�
 }
 ```
 
-服务端只向 stderr 写日志，stdout 保留给 MCP JSON-RPC，避免破坏 stdio 协议。
+stdout 只用于 MCP JSON-RPC；正常运行时不向 stderr 写日志，避免调用记录进入 Codex 的
+stderr 日志。无法创建日志目录等启动期致命错误仍可能由 Python 在 stderr 报告。
 如果使用 `sse` 或 `streamable-http`，必须在外部配置认证、反向代理和网络访问
 控制；不要将带 Trade 权限的服务直接暴露到公网。
 
@@ -110,7 +113,7 @@ Ubuntu 客户端配置使用同一命令，只需替换项目路径：
 
 ## 调用日志
 
-每次工具调用都会向 stderr 写入单行 JSON 日志：
+每次工具调用默认向 `~/.htxmcp/htx-mcp.log` 写入单行 JSON 日志：
 
 - `tool_input`：工具名及输入参数。
 - `tool_output`：结构化返回、是否出错和耗时。
@@ -120,11 +123,22 @@ Ubuntu 客户端配置使用同一命令，只需替换项目路径：
 Password、Signature 以及签名 URL 中的认证参数会被替换为 `<redacted>`。日志仍可能包含
 余额、仓位、订单和成交数据，应按敏感交易记录保护，不要上传到公开日志服务。
 
+活动日志默认达到 10 MiB 后滚动为类似
+`htx-mcp.20260907T120000000000Z.1234.1.log` 的文件。滚动文件不压缩、不自动删除，因而会
+持续保留；管理员必须自行监控 `~/.htxmcp` 的磁盘占用。目录会尝试设置为仅当前用户可访问，
+日志文件会尝试设置为 `0600`；Windows 上最终权限仍由该目录的 ACL 决定。
+
 `HTX_LOG_LEVEL=INFO`（默认）记录成功和失败调用；`DEBUG` 还会启用更详细的组件诊断；
 `WARNING` 不记录成功调用；`ERROR` 只记录失败调用；`CRITICAL` 关闭普通调用和错误日志。
 无效级别会在启动时明确报错。Windows PowerShell 可使用
 `$env:HTX_LOG_LEVEL = "WARNING"`，Ubuntu shell 可使用
 `export HTX_LOG_LEVEL=WARNING`。
+
+Ubuntu 可选择由系统 `logrotate` 管理活动文件。先在 MCP 环境中设置
+`HTX_LOG_MAX_BYTES=0`，再复制 [scripts/htx-mcp.logrotate](scripts/htx-mcp.logrotate) 到
+`/etc/logrotate.d/htx-mcp`，并把其中两处 `USERNAME` 替换为运行 MCP 的实际用户。模板使用
+`copytruncate`、`nocompress` 和 `rotate -1`：只复制后截断活动文件，不压缩且不删除历史日志。
+不要同时让内部大小滚动和 logrotate 管理同一活动文件，以免产生难以预测的双重切分。
 
 ## 私有接口认证排障
 

@@ -4,8 +4,10 @@ import logging
 import os
 import subprocess
 import sys
+import tempfile
 from dataclasses import replace
 from importlib.metadata import version
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import anyio
@@ -13,6 +15,7 @@ import pytest
 from mcp import ClientSession
 
 from htx_mcp import __version__, server
+from htx_mcp.logging_config import configured_log_level
 from htx_mcp.server import mcp
 
 
@@ -101,10 +104,10 @@ def test_package_and_server_versions_stay_in_sync():
 
 
 def test_log_level_configuration_is_platform_independent():
-    assert server._configured_log_level(" debug ") == "DEBUG"
-    assert server._configured_log_level("warning") == "WARNING"
+    assert configured_log_level(" debug ") == "DEBUG"
+    assert configured_log_level("warning") == "WARNING"
     with pytest.raises(ValueError, match="HTX_LOG_LEVEL"):
-        server._configured_log_level("verbose")
+        configured_log_level("verbose")
 
 
 def test_tool_calls_log_redacted_inputs_and_structured_outputs(caplog):
@@ -158,25 +161,40 @@ def test_environment_log_level_controls_success_events_in_subprocess():
     )
     base_env = {**os.environ, "HTX_TOOLSETS": "all"}
 
-    info = subprocess.run(
-        [sys.executable, "-c", script],
-        env={**base_env, "HTX_LOG_LEVEL": "INFO"},
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    warning = subprocess.run(
-        [sys.executable, "-c", script],
-        env={**base_env, "HTX_LOG_LEVEL": "WARNING"},
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    with (
+        tempfile.TemporaryDirectory() as info_dir,
+        tempfile.TemporaryDirectory() as warning_dir,
+    ):
+        info = subprocess.run(
+            [sys.executable, "-c", script],
+            env={
+                **base_env,
+                "HTX_LOG_LEVEL": "INFO",
+                "HTX_LOG_DIR": info_dir,
+            },
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        warning = subprocess.run(
+            [sys.executable, "-c", script],
+            env={
+                **base_env,
+                "HTX_LOG_LEVEL": "WARNING",
+                "HTX_LOG_DIR": warning_dir,
+            },
+            check=True,
+            capture_output=True,
+            text=True,
+        )
 
-    assert '"event":"tool_input"' in info.stderr
-    assert '"event":"tool_output"' in info.stderr
-    assert '"event":"tool_input"' not in warning.stderr
-    assert '"event":"tool_output"' not in warning.stderr
+        info_log = (Path(info_dir) / "htx-mcp.log").read_text(encoding="utf-8")
+        warning_log = Path(warning_dir) / "htx-mcp.log"
+        assert info.stderr == ""
+        assert warning.stderr == ""
+        assert '"event":"tool_input"' in info_log
+        assert '"event":"tool_output"' in info_log
+        assert not warning_log.exists() or warning_log.stat().st_size == 0
 
 
 def test_toolsets_can_publish_only_the_selected_semantic_layer(monkeypatch):

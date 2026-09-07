@@ -1,0 +1,14 @@
+# Replace USERNAME with the account that runs htx-mcp, then install this file
+# as /etc/logrotate.d/htx-mcp. Set HTX_LOG_MAX_BYTES=0 when logrotate owns rotation.
+/home/USERNAME/.htxmcp/htx-mcp.log {
+    daily
+    maxsize 10M
+    rotate -1
+    dateext
+    dateformat -%Y%m%d-%H%M%S
+    missingok
+    notifempty
+    copytruncate
+    nocompress
+    su USERNAME USERNAME
+}
