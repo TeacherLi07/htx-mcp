@@ -1,6 +1,6 @@
 {
   "name": "htx-trader",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "For every HTX operation, load all bundled skills first; then research, plan, execute, manage margin, or diagnose.",
   "author": {
     "name": "HTX MCP maintainers"

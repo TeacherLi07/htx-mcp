@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.3 - 2026-09-08
+
+- Optimise long number and id
+- enable multi-currency wait trigger
+
 ## 0.7.2 - 2026-09-08
 
 - Require the HTX Trader plugin to load all bundled skills before handling an HTX operation.
