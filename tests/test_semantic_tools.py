@@ -600,6 +600,53 @@ def test_market_wait_supports_indicator_aliases_and_all_matching(monkeypatch):
     }
 
 
+def test_market_wait_supports_independent_markets_in_one_wait(monkeypatch):
+    _install_router(
+        monkeypatch,
+        {
+            "/market/detail/merged": {"status": "ok", "tick": {"close": "70000"}},
+            "/linear-swap-ex/market/detail/merged": {
+                "status": "ok",
+                "tick": {"close": "60000"},
+            },
+        },
+    )
+
+    result = asyncio.run(
+        mcp.call_tool(
+            "htx_wait_for_market_event",
+            {
+                "conditions": [
+                    {
+                        "product": "spot",
+                        "instrument": "btcusdt",
+                        "metric": "last_price",
+                        "operator": "gte",
+                        "value": "70000",
+                    },
+                    {
+                        "product": "swap",
+                        "instrument": "BTC-USDT",
+                        "metric": "last_price",
+                        "operator": "gte",
+                        "value": "70000",
+                    },
+                ],
+                "timeout_seconds": 10,
+            },
+        )
+    ).structured_content
+
+    assert result["status"] == "triggered"
+    assert result["product"] is None
+    assert result["instrument"] is None
+    assert result["matched_conditions"] == [0]
+    assert result["observations"] == {
+        "spot:btcusdt/last_price": "70000",
+        "swap:BTC-USDT/last_price": "60000",
+    }
+
+
 def test_market_wait_enforces_its_deadline_while_a_market_call_is_slow(monkeypatch):
     async def slow_ticker(_symbol):
         await asyncio.sleep(2)

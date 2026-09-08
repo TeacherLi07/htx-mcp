@@ -73,8 +73,8 @@ class TechnicalIndicatorsResult(TypedDict):
 
 class MarketWaitResult(TypedDict):
     status: Literal["triggered", "timed_out", "data_unavailable"]
-    product: Literal["spot", "swap"]
-    instrument: str
+    product: Literal["spot", "swap"] | None
+    instrument: str | None
     match: Literal["any", "all"]
     started_at_ms: int
     finished_at_ms: int

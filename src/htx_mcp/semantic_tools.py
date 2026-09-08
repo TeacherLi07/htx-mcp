@@ -80,6 +80,8 @@ class MarketWaitCondition(BaseModel):
     metric: Literal["last_price", "indicator"]
     operator: Literal["gte", "lte"]
     value: Decimal
+    product: Literal["spot", "swap"] | None = None
+    instrument: str | None = None
     indicator: str | None = None
     component: str = "value"
 
@@ -91,6 +93,8 @@ class MarketWaitCondition(BaseModel):
             raise ValueError("indicator is only valid when metric is 'indicator'")
         if self.value <= 0 and self.metric == "last_price":
             raise ValueError("last_price threshold must be positive")
+        if self.instrument is not None and not self.instrument.strip():
+            raise ValueError("instrument must not be empty")
         return self
 
 
@@ -1284,16 +1288,16 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
 
     @mcp.tool(annotations=api.READ, toolsets={"analysis"})
     async def htx_wait_for_market_event(
-        product: Product,
-        instrument: Instrument,
         conditions: Annotated[
             list[MarketWaitCondition],
             Field(
                 min_length=1,
                 max_length=8,
-                description="Declarative conditions to wait for. A condition checks last_price or a supported technical indicator (for example indicator='rsi:14' or 'macd:12,26,9' with component='histogram'). Arbitrary code and expressions are not accepted.",
+                description="Declarative conditions to wait for. Each condition may override product and instrument, allowing independent markets in one wait. A condition checks last_price or a supported technical indicator (for example indicator='rsi:14' or 'macd:12,26,9' with component='histogram'). Arbitrary code and expressions are not accepted.",
             ),
         ],
+        product: Product | None = None,
+        instrument: Instrument | None = None,
         match: Annotated[
             Literal["any", "all"],
             Field(
@@ -1346,13 +1350,29 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
         """
 
         period_ms(candle_period)
-        code = (
-            api._symbol(instrument) if product == "spot" else api._contract(instrument)
-        )
-        need_ticker = any(condition.metric == "last_price" for condition in conditions)
+        markets: dict[tuple[str, str], dict[str, Any]] = {}
+        condition_markets: dict[int, tuple[str, str]] = {}
         condition_indicators: dict[int, str] = {}
         for index, condition in enumerate(conditions):
+            condition_product = condition.product or product
+            condition_instrument = condition.instrument or instrument
+            if condition_product is None or condition_instrument is None:
+                raise ToolError(
+                    "Each condition requires product and instrument, either on the condition or as top-level defaults"
+                )
+            code = (
+                api._symbol(condition_instrument)
+                if condition_product == "spot"
+                else api._contract(condition_instrument)
+            )
+            market = (condition_product, code)
+            markets.setdefault(
+                market, {"indices": [], "indicators": set(), "ticker": False}
+            )
+            markets[market]["indices"].append(index)
+            condition_markets[index] = market
             if condition.indicator is None:
+                markets[market]["ticker"] = True
                 continue
             canonical = canonical_indicator_spec(condition.indicator)
             if condition.component not in indicator_components(canonical):
@@ -1361,7 +1381,45 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                     f"'{condition.component}'"
                 )
             condition_indicators[index] = canonical
-        indicator_specs = sorted(set(condition_indicators.values()))
+            markets[market]["indicators"].add(canonical)
+        multiple_markets = len(markets) > 1
+
+        def observation_key(index: int) -> str:
+            condition = conditions[index]
+            metric_key = (
+                "last_price"
+                if condition.metric == "last_price"
+                else f"{condition_indicators[index]}/{condition.component}"
+            )
+            if not multiple_markets:
+                return metric_key
+            market_product, market_code = condition_markets[index]
+            return f"{market_product}:{market_code}/{metric_key}"
+
+        async def poll_market(
+            market: tuple[str, str], requirements: dict[str, Any]
+        ) -> tuple[tuple[str, str], dict[str, Any]]:
+            market_product, market_code = market
+            calls: dict[str, Any] = {}
+            if requirements["ticker"]:
+                calls["ticker"] = (
+                    api.spot_get_ticker(market_code)
+                    if market_product == "spot"
+                    else api.futures_get_ticker(market_code)
+                )
+            if requirements["indicators"]:
+                calls["klines"] = (
+                    api.spot_get_klines(
+                        market_code, period=candle_period, size=candle_size
+                    )
+                    if market_product == "spot"
+                    else api.futures_get_klines(
+                        market_code, period=candle_period, size=candle_size
+                    )
+                )
+            responses = await asyncio.gather(*calls.values())
+            return market, dict(zip(calls, responses))
+
         started_monotonic = time.monotonic()
         started_at_ms = int(time.time() * 1000)
         deadline = started_monotonic + timeout_seconds
@@ -1373,63 +1431,89 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
         last_observations: dict[str, str | None] = {}
 
         while True:
-            observations: dict[str, Decimal] = {}
-            indicator_price_places: int | None = None
+            observations: dict[str, tuple[Decimal, str | None, int | None]] = {}
             poll_started = time.monotonic()
             try:
                 remaining = deadline - time.monotonic()
                 if remaining > 0:
                     polls += 1
-                    calls: dict[str, Any] = {}
-                    if need_ticker:
-                        calls["ticker"] = (
-                            api.spot_get_ticker(code)
-                            if product == "spot"
-                            else api.futures_get_ticker(code)
-                        )
-                    if indicator_specs:
-                        calls["klines"] = (
-                            api.spot_get_klines(
-                                code, period=candle_period, size=candle_size
-                            )
-                            if product == "spot"
-                            else api.futures_get_klines(
-                                code, period=candle_period, size=candle_size
-                            )
-                        )
                     results = await asyncio.wait_for(
-                        asyncio.gather(*calls.values()), timeout=remaining
+                        asyncio.gather(
+                            *(
+                                poll_market(market, requirements)
+                                for market, requirements in markets.items()
+                            ),
+                            return_exceptions=True,
+                        ),
+                        timeout=remaining,
                     )
-                    successful_polls += 1
-                    last_success_at_ms = int(time.time() * 1000)
-                    payloads = dict(zip(calls, results))
-                    if "ticker" in payloads:
-                        last = _ticker(payloads["ticker"])["last"]
-                        if last is None:
-                            raise ToolError("HTX ticker did not include a last price")
-                        observations["last_price"] = Decimal(last)
-                    if "klines" in payloads:
-                        candles = candles_from_htx(_data(payloads["klines"]))
-                        now_ms = int(time.time() * 1000)
-                        candles = [
-                            candle
-                            for candle in candles
-                            if candle.open_time_ms + period_ms(candle_period) <= now_ms
-                        ]
-                        indicator_price_places = price_decimal_places(candles)
-                        indicator_values = calculate_indicator_values(
-                            candles, indicator_specs
-                        )
-                        for index, condition in enumerate(conditions):
-                            canonical = condition_indicators.get(index)
-                            if canonical is None:
-                                continue
-                            result = indicator_values[canonical]
-                            value = result.get(condition.component)
-                            if value is not None:
-                                observations[f"{canonical}/{condition.component}"] = (
-                                    value
+                    successful = 0
+                    failures: list[Exception] = []
+                    for market_result in results:
+                        if isinstance(market_result, Exception):
+                            failures.append(market_result)
+                            continue
+                        market, payloads = market_result
+                        successful += 1
+                        requirements = markets[market]
+                        if "ticker" in payloads:
+                            last = _ticker(payloads["ticker"])["last"]
+                            if last is None:
+                                failures.append(
+                                    ToolError("HTX ticker did not include a last price")
                                 )
+                            else:
+                                for index in requirements["indices"]:
+                                    if conditions[index].metric == "last_price":
+                                        observations[observation_key(index)] = (
+                                            Decimal(last),
+                                            None,
+                                            None,
+                                        )
+                        if "klines" in payloads:
+                            candles = candles_from_htx(_data(payloads["klines"]))
+                            now_ms = int(time.time() * 1000)
+                            candles = [
+                                candle
+                                for candle in candles
+                                if candle.open_time_ms + period_ms(candle_period)
+                                <= now_ms
+                            ]
+                            indicator_values = calculate_indicator_values(
+                                candles, sorted(requirements["indicators"])
+                            )
+                            price_places = price_decimal_places(candles)
+                            for index in requirements["indices"]:
+                                canonical = condition_indicators.get(index)
+                                if canonical is None:
+                                    continue
+                                value = indicator_values[canonical].get(
+                                    conditions[index].component
+                                )
+                                if value is not None:
+                                    observations[observation_key(index)] = (
+                                        value,
+                                        canonical,
+                                        price_places,
+                                    )
+                    if successful:
+                        successful_polls += 1
+                        last_success_at_ms = int(time.time() * 1000)
+                    if failures:
+                        failed_polls += 1
+                        if len(warnings) < 10:
+                            failure = failures[0]
+                            warnings.append(
+                                {
+                                    "poll": polls,
+                                    "error_type": type(failure).__name__,
+                                    "message": str(failure) or "market request failed",
+                                    "retryable": isinstance(
+                                        failure, (asyncio.TimeoutError, HtxApiError)
+                                    ),
+                                    "at_ms": int(time.time() * 1000),
+                                }
+                            )
             except (
                 asyncio.TimeoutError,
                 HtxApiError,
@@ -1458,29 +1542,29 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                 last_observations = {
                     key: (
                         decimal_to_text(value)
-                        if key == "last_price"
+                        if specification is None
                         else format_indicator_value(
-                            key.split("/", maxsplit=1)[0],
+                            specification,
                             value,
-                            price_places=indicator_price_places,
+                            price_places=price_places,
                         )
                     )
-                    for key, value in observations.items()
+                    for key, (
+                        value,
+                        specification,
+                        price_places,
+                    ) in observations.items()
                 }
             matched_conditions: list[int] = []
             for index, condition in enumerate(conditions):
-                key = (
-                    "last_price"
-                    if condition.metric == "last_price"
-                    else f"{condition_indicators[index]}/{condition.component}"
-                )
+                key = observation_key(index)
                 observed = observations.get(key)
                 if observed is None:
                     continue
                 matched = (
-                    observed >= condition.value
+                    observed[0] >= condition.value
                     if condition.operator == "gte"
-                    else observed <= condition.value
+                    else observed[0] <= condition.value
                 )
                 if matched:
                     matched_conditions.append(index)
@@ -1501,8 +1585,10 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                 finished_at_ms = int(time.time() * 1000)
                 return {
                     "status": status,
-                    "product": product,
-                    "instrument": code,
+                    "product": next(iter(markets))[0] if not multiple_markets else None,
+                    "instrument": (
+                        next(iter(markets))[1] if not multiple_markets else None
+                    ),
                     "match": match,
                     "started_at_ms": started_at_ms,
                     "finished_at_ms": finished_at_ms,
