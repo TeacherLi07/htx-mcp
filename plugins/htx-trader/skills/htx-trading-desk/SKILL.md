@@ -23,4 +23,4 @@ Route the work deliberately:
 - Use `htx-margin-operations` for borrowing, repayment, transfers, or margin orders.
 - Use `htx-operations` for configuration or access failures.
 
-When conditions are absent, prefer a written watch condition and a bounded `htx_wait_for_market_event` over repeated polling. Treat a wait result as a signal to refresh and reassess, not as proof that an order should be placed.
+When conditions are absent, prefer a written watch condition and a bounded `htx_wait_for_market_event` over repeated polling. Follow `htx-market-research`'s `yield_time_ms` rule so the wait tool is the only wake-up source. Treat a wait result as a signal to refresh and reassess, not as proof that an order should be placed.

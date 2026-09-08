@@ -82,3 +82,17 @@ def test_execution_skill_allows_user_controlled_continuing_authorization():
     assert "conversation-scoped" in desk
     assert "not a permission source" in desk
     assert "not a new request for user approval" in execution
+
+
+def test_market_wait_skill_requires_the_tool_to_be_the_only_wake_up_source():
+    research = (PLUGIN_ROOT / "skills" / "htx-market-research" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    desk = (PLUGIN_ROOT / "skills" / "htx-trading-desk" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "`yield_time_ms`" in research
+    assert "`timeout_seconds * 1000`" in research
+    assert "do not yield while the tool is pending" in research
+    assert "only wake-up source" in desk
