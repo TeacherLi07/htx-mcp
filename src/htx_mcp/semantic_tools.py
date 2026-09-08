@@ -24,6 +24,7 @@ from .indicators import (
     calculate_indicators,
     candles_from_htx,
     canonical_indicator_spec,
+    compact_indicator_output,
     indicator_components,
     period_ms,
 )
@@ -1123,8 +1124,10 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
         """Return only the requested, Decimal-calculated technical indicators.
 
         The model chooses which named indicators to inspect; it never calculates
-        them itself. Raw K-lines remain available solely through the opt-in
-        advanced compatibility toolset for research and diagnostics.
+        them itself. Results are display-rounded to reduce token use: price-unit
+        series use eight significant digits and RSI/KDJ use four decimal places.
+        Raw K-lines remain available solely through the opt-in advanced
+        compatibility toolset for research and diagnostics.
         """
 
         code = (
@@ -1155,7 +1158,9 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             "completed_candles": len(candles),
             "omitted_incomplete_candles": omitted,
             "latest_completed_open_ms": candles[-1].open_time_ms if candles else None,
-            "indicators": calculate_indicators(candles, indicators),
+            "indicators": compact_indicator_output(
+                calculate_indicators(candles, indicators)
+            ),
         }
 
     @mcp.tool(annotations=api.READ, toolsets={"analysis"})

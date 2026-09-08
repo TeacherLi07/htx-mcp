@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation, localcontext
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation, localcontext
 from math import isqrt
 from typing import Any
 
@@ -105,6 +105,28 @@ def _wilder(values: list[Decimal], period: int) -> list[Decimal | None]:
 def _text(value: Decimal) -> str:
     text = decimal_to_text(value)
     return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def _compact_text(
+    value: str, *, significant_digits: int | None = None, places: int | None = None
+) -> str:
+    """Return an indicator display value without exposing calculation precision."""
+
+    decimal_value = Decimal(value)
+    if places is not None:
+        rounded = decimal_value.quantize(
+            Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP
+        )
+    else:
+        assert significant_digits is not None
+        if decimal_value.is_zero():
+            rounded = Decimal(0)
+        else:
+            exponent = decimal_value.copy_abs().adjusted() - significant_digits + 1
+            rounded = decimal_value.quantize(
+                Decimal(1).scaleb(exponent), rounding=ROUND_HALF_UP
+            )
+    return _text(Decimal(0) if rounded.is_zero() else rounded)
 
 
 def _positive_int(value: str, label: str) -> int:
@@ -304,4 +326,34 @@ def calculate_indicators(
                     "d": _text(d_value),
                     "j": _text(Decimal(3) * k_value - Decimal(2) * d_value),
                 }
+    return output
+
+
+def compact_indicator_output(
+    indicators: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Round display-only indicator values while preserving calculation results elsewhere.
+
+    Price-unit series retain eight significant digits, oscillator values retain four
+    decimal places, and volume series retain eight significant digits. This is
+    intentionally applied only to the analysis response, never to wait-condition
+    evaluation or trade construction.
+    """
+
+    output: dict[str, dict[str, Any]] = {}
+    for specification, result in indicators.items():
+        name = specification.partition(":")[0]
+        if name in {"rsi", "kdj"}:
+            formatter = {"places": 4}
+        else:
+            formatter = {"significant_digits": 8}
+        output[specification] = {
+            field: (
+                _compact_text(value, **formatter)
+                if field not in {"status", "required_candles", "available_candles"}
+                and isinstance(value, str)
+                else value
+            )
+            for field, value in result.items()
+        }
     return output
