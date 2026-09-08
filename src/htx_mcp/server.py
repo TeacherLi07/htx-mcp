@@ -985,7 +985,7 @@ def configuration_resource() -> str:
                 "mutations_require_confirm": True,
                 "mutations_require_HTX_ENABLE_TRADING": True,
                 "swap_mutations_require_HTX_ENABLE_SWAP_TRADING": True,
-                "server_logs_to": "stderr",
+                "server_logs_to": "configured file log",
             },
         }
     )
