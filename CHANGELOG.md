@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.6.3 - 2026-09-08
+## 0.7.0 - 2026-09-08
 
 - Package the HTX MCP server and trading workflows as the `HTX Trader` Codex plugin.
 - Add skills for market research, trade planning, guarded execution, margin operations, and diagnostics.

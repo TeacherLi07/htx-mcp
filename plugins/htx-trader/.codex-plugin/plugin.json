@@ -1,6 +1,6 @@
 {
   "name": "htx-trader",
-  "version": "0.6.3",
+  "version": "0.7.0",
   "description": "HTX market research, trade planning, and guarded execution.",
   "author": {
     "name": "HTX MCP maintainers"
