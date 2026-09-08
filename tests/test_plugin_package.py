@@ -14,6 +14,9 @@ def test_plugin_manifest_connects_skills_and_mcp_server():
     )
 
     assert manifest["name"] == "htx-trader"
+    assert manifest["version"] == "0.7.2"
+    assert manifest["description"].startswith("For every HTX operation")
+    assert "load all bundled skills" in manifest["interface"]["longDescription"]
     assert manifest["skills"] == "./skills/"
     assert manifest["mcpServers"] == "./.mcp.json"
     assert manifest["interface"]["capabilities"] == ["Interactive", "Write"]

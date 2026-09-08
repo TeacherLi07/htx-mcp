@@ -1,7 +1,7 @@
 {
   "name": "htx-trader",
-  "version": "0.7.1",
-  "description": "HTX market research, trade planning, and guarded execution.",
+  "version": "0.7.2",
+  "description": "For every HTX operation, load all bundled skills first; then research, plan, execute, manage margin, or diagnose.",
   "author": {
     "name": "HTX MCP maintainers"
   },
@@ -9,7 +9,7 @@
   "interface": {
     "displayName": "HTX Trader",
     "shortDescription": "Research HTX markets and execute guarded trades.",
-    "longDescription": "A workflow-oriented HTX trading plugin with live market analysis, trade planning, guarded execution, and operational diagnostics.",
+    "longDescription": "For every HTX operation, load all bundled skills before acting. This workflow-oriented plugin then provides live market analysis, trade planning, guarded execution, margin operations, and diagnostics.",
     "developerName": "HTX MCP maintainers",
     "category": "Productivity",
     "capabilities": ["Interactive", "Write"],

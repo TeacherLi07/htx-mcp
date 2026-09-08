@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.2 - 2026-09-08
+
+- Require the HTX Trader plugin to load all bundled skills before handling an HTX operation.
+
 ## 0.7.1 - 2026-09-08
 
 - Add a repository-local Codex marketplace and an Ubuntu launcher that loads HTX credentials and runtime mode from the ignored `.env` file.
