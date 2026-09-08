@@ -1,0 +1,20 @@
+{
+  "name": "htx-mcp-local",
+  "interface": {
+    "displayName": "HTX MCP Local"
+  },
+  "plugins": [
+    {
+      "name": "htx-trader",
+      "source": {
+        "source": "local",
+        "path": "./plugins/htx-trader"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

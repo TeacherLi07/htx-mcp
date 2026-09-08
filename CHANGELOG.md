@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.1 - 2026-09-08
+
+- Add a repository-local Codex marketplace and an Ubuntu launcher that loads HTX credentials and runtime mode from the ignored `.env` file.
+- Set the HTX MCP server tool timeout to two hours for all tool calls.
+
 ## 0.7.0 - 2026-09-08
 
 - Package the HTX MCP server and trading workflows as the `HTX Trader` Codex plugin.

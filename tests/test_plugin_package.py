@@ -24,10 +24,27 @@ def test_plugin_mcp_defaults_to_semantic_read_and_plan_tools():
     config = json.loads((PLUGIN_ROOT / ".mcp.json").read_text(encoding="utf-8"))
     htx = config["mcpServers"]["htx"]
 
-    assert htx["command"] == "uv"
-    assert htx["args"] == ["run", "htx-mcp"]
-    assert htx["env"]["HTX_ENABLE_TRADING"] == "false"
-    assert htx["env"]["HTX_TOOLSETS"] == "analysis,planning,ops"
+    assert htx["command"] == "bash"
+    assert htx["args"] == ["scripts/run-htx-mcp-from-env.sh"]
+    assert htx["cwd"] == "/workspace/htx-mcp"
+    assert htx["tool_timeout_sec"] == 7200
+    assert "env" not in htx
+    assert "env_vars" not in htx
+
+
+def test_plugin_marketplace_and_env_launcher_are_ready_for_codex_cli():
+    marketplace = json.loads(
+        (PLUGIN_ROOT.parents[1] / ".agents" / "plugins" / "marketplace.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    launcher = (
+        PLUGIN_ROOT.parents[1] / "scripts" / "run-htx-mcp-from-env.sh"
+    ).read_text(encoding="utf-8")
+
+    assert marketplace["name"] == "htx-mcp-local"
+    assert marketplace["plugins"][0]["source"]["path"] == "./plugins/htx-trader"
+    assert 'uv run --env-file "$env_file" htx-mcp' in launcher
 
 
 def test_plugin_skills_cover_the_trading_lifecycle():

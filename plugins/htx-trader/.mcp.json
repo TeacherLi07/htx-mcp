@@ -1,14 +1,10 @@
 {
   "mcpServers": {
     "htx": {
-      "command": "uv",
-      "args": ["run", "htx-mcp"],
+      "command": "bash",
+      "args": ["scripts/run-htx-mcp-from-env.sh"],
       "cwd": "/workspace/htx-mcp",
-      "env": {
-        "HTX_ENABLE_TRADING": "false",
-        "HTX_TOOLSETS": "analysis,planning,ops"
-      },
-      "env_vars": ["HTX_API_KEY", "HTX_API_SECRET"]
+      "tool_timeout_sec": 7200
     }
   }
 }

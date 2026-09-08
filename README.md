@@ -116,6 +116,32 @@ uv run python scripts/switch_to_non_unified_account.py --confirm-switch-to-non-u
 用户的交易授权范围只约束 agent 行为；它不是 MCP 服务端的权限策略，并且默认仅在当前对话有效。
 低层端点仍由 `HTX_TOOLSETS=all` 提供，供高级兼容与诊断使用。
 
+#### Ubuntu Codex CLI local install
+
+在仓库根目录创建本地配置（真实 `.env` 已被 Git 忽略）：
+
+```bash
+cp .env.example .env
+chmod 600 .env
+```
+
+在 `.env` 设置 `HTX_API_KEY`、`HTX_API_SECRET`、`HTX_ENABLE_TRADING` 和
+`HTX_TOOLSETS`。例如，`HTX_ENABLE_TRADING=false` 与
+`HTX_TOOLSETS=analysis,planning,ops` 提供只读研究/规划模式；只有明确设置
+`HTX_ENABLE_TRADING=true` 与 `HTX_TOOLSETS=trading` 后才会发布语义化执行工具。
+
+安装仓库级 marketplace 并安装 plugin：
+
+```bash
+codex plugin marketplace add /workspace/htx-mcp
+codex plugin add htx-trader@htx-mcp-local
+```
+
+启动新会话后，plugin 通过 `scripts/run-htx-mcp-from-env.sh` 用同一份 `.env` 启动 MCP。
+所有 HTX MCP 工具调用统一使用 `tool_timeout_sec=7200`（两小时），以支持有界市场等待。
+若仓库不在 `/workspace/htx-mcp`，将 `plugins/htx-trader/.mcp.json` 的 `cwd` 改为实际绝对路径，
+然后重新安装 plugin。
+
 ### Direct Codex MCP configuration
 
 将以下配置添加到用户级 `~/.codex/config.toml`，或受信任项目的
