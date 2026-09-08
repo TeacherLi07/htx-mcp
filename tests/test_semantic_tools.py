@@ -238,7 +238,7 @@ def test_v5_preview_uses_position_side_and_rejects_inline_leverage(monkeypatch):
         "price": "60000.1",
         "time_in_force": "ioc",
         "reduce_only": 0,
-        "client_order_id": "1788830000001",
+        "client_order_id": "17888300",
     }
     assert blocked["status"] == "blocked"
     assert "v5_leverage_must_be_set_separately" in {
@@ -629,6 +629,45 @@ def test_market_wait_enforces_its_deadline_while_a_market_call_is_slow(monkeypat
     assert result.structured_content["status"] == "data_unavailable"
     assert result.structured_content["polls"] == 1
     assert elapsed < 1.5
+
+
+def test_market_wait_cancellation_cancels_its_inflight_market_request(monkeypatch):
+    async def run() -> None:
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def blocked_ticker(_symbol):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        monkeypatch.setattr(server, "spot_get_ticker", blocked_ticker)
+        task = asyncio.create_task(
+            mcp.call_tool(
+                "htx_wait_for_market_event",
+                {
+                    "product": "spot",
+                    "instrument": "btcusdt",
+                    "conditions": [
+                        {
+                            "metric": "last_price",
+                            "operator": "gte",
+                            "value": "70000",
+                        }
+                    ],
+                    "timeout_seconds": 60,
+                },
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.wait_for(cancelled.wait(), timeout=1)
+
+    asyncio.run(run())
 
 
 def test_market_wait_tool_warns_that_it_hides_intermediate_market_updates():
@@ -1406,6 +1445,7 @@ def test_portfolio_snapshot_filters_zero_spot_balances_and_normalizes_v5_margin(
                 }
             ),
             "/v1/order/openOrders": _ok([]),
+            "/market/tickers": _ok([{"symbol": "btcusdt", "close": "60000"}]),
             "/v5/account/balance": _ok(
                 {
                     "equity": "0",
@@ -1436,13 +1476,51 @@ def test_portfolio_snapshot_filters_zero_spot_balances_and_normalizes_v5_margin(
 
     spot = result["accounts"]["spot"]
     swap = result["accounts"]["swap"]["balances"]
-    assert spot["balances"]["list"] == [
-        {"currency": "usdt", "type": "trade", "balance": "24.99"}
-    ]
-    assert spot["filtered_zero_balance_count"] == 2
+    assert spot["balances"] == {
+        "assets": [{"asset": "USDT", "amount": "24.99", "value_usdt": "24.99"}]
+    }
+    assert spot["filtered_dust_asset_count"] == 1
+    assert spot["filtered_unpriced_asset_count"] == 1
     assert swap["primary_margin_asset"] == "USDT"
     assert swap["equity"] == "24.99223716"
     assert swap["available_margin"] == "21.96847082666666667"
+
+
+def test_account_snapshot_values_assets_and_verbose_preserves_balance_records(
+    monkeypatch,
+):
+    _install_router(
+        monkeypatch,
+        {
+            "/v1/account/accounts/1000/balance": _ok(
+                {
+                    "list": [
+                        {"currency": "btc", "type": "trade", "balance": "0.001"},
+                        {"currency": "unpriced", "type": "trade", "balance": "1"},
+                    ]
+                }
+            ),
+            "/market/tickers": _ok([{"symbol": "btcusdt", "close": "60000"}]),
+        },
+    )
+
+    compact = asyncio.run(
+        mcp.call_tool(
+            "htx_get_account_snapshot", {"product": "spot", "include": ["balances"]}
+        )
+    ).structured_content
+    verbose = asyncio.run(
+        mcp.call_tool(
+            "htx_get_account_snapshot",
+            {"product": "spot", "include": ["balances"], "verbose": True},
+        )
+    ).structured_content
+
+    assert compact["balances"] == {
+        "assets": [{"asset": "BTC", "amount": "0.001", "value_usdt": "60"}]
+    }
+    assert all(asset["asset"] != "UNPRICED" for asset in compact["balances"]["assets"])
+    assert verbose["balances"]["list"][1]["currency"] == "unpriced"
 
 
 def test_reconcile_keeps_order_id_when_v5_canceled_record_has_null_id(monkeypatch):
@@ -1470,7 +1548,27 @@ def test_reconcile_keeps_order_id_when_v5_canceled_record_has_null_id(monkeypatc
     finally:
         server.client.config = original
 
-    assert result["order"]["id"] == "1546810734811971584"
+    assert result["order"]["id"] == "15468107"
+    assert server._resolve_semantic_ids({"order_id": result["order"]["id"]}) == {
+        "order_id": "1546810734811971584"
+    }
+
+    server.client.config = replace(original, swap_api_version="v5")
+    try:
+        replayed = asyncio.run(
+            mcp.call_tool(
+                "htx_reconcile_trade",
+                {
+                    "product": "swap",
+                    "instrument": "DOGE-USDT",
+                    "order_id": result["order"]["id"],
+                },
+            )
+        ).structured_content
+
+        assert replayed["status"] == "found"
+    finally:
+        server.client.config = original
 
 
 def test_spot_market_order_preview_omits_supplied_price(monkeypatch):

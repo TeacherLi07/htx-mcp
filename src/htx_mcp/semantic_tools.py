@@ -12,7 +12,7 @@ import hashlib
 import json
 import re
 import time
-from decimal import Decimal, InvalidOperation, localcontext
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation, localcontext
 from types import ModuleType
 from typing import Annotated, Any, Literal
 
@@ -21,12 +21,14 @@ from pydantic import BaseModel, Field, model_validator
 
 from .client import HtxApiError
 from .indicators import (
+    calculate_indicator_values,
     calculate_indicators,
     candles_from_htx,
     canonical_indicator_spec,
-    compact_indicator_output,
+    format_indicator_value,
     indicator_components,
     period_ms,
+    price_decimal_places,
 )
 from .models import (
     AccountSnapshotResult,
@@ -300,7 +302,34 @@ def _compact_spot_balances(balances: Any) -> tuple[Any, int]:
     return {**balances, "list": kept}, len(balances["list"]) - len(kept)
 
 
-def _normalize_v5_balances(balances: Any) -> Any:
+def _display_decimal(
+    value: Decimal, *, significant_digits: int | None = None, places: int | None = None
+) -> str:
+    """Format a display value without changing the Decimal used for decisions."""
+
+    if places is not None:
+        rounded = value.quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)
+    elif value.is_zero():
+        rounded = Decimal(0)
+    else:
+        assert significant_digits is not None
+        exponent = value.copy_abs().adjusted() - significant_digits + 1
+        rounded = value.quantize(Decimal(1).scaleb(exponent), rounding=ROUND_HALF_UP)
+    text = decimal_to_text(Decimal(0) if rounded.is_zero() else rounded)
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def _spot_balance_amount(record: dict[str, Any]) -> Decimal | None:
+    value = record.get("balance")
+    if value in (None, ""):
+        return None
+    try:
+        return Decimal(str(value))
+    except InvalidOperation:
+        return None
+
+
+def _normalize_v5_balances(balances: Any, *, verbose: bool) -> Any:
     """Expose verified per-asset V5 margin totals without trusting zero envelopes."""
 
     if not isinstance(balances, dict):
@@ -319,14 +348,14 @@ def _normalize_v5_balances(balances: Any) -> Any:
     numeric_fields = ("equity", "available_margin", "available", "margin_balance")
     if not any(primary.get(field) not in (None, "") for field in numeric_fields):
         return balances
-    normalized = {
-        **balances,
-        "details": details,
+    normalized: dict[str, Any] = {
         "primary_margin_asset": str(primary["currency"]).upper(),
     }
     for field in numeric_fields:
         if primary.get(field) not in (None, ""):
             normalized[field] = _number_text(primary[field])
+    if verbose:
+        return {**balances, "details": details, **normalized}
     return normalized
 
 
@@ -498,6 +527,81 @@ def _market_fields(product: str, profile: str, include: list[str] | None) -> set
 def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
     """Register the semantic facade against the existing raw server gateway."""
 
+    quote_cache: dict[str, Decimal] = {"USDT": Decimal(1)}
+    quote_cache_at = 0.0
+    quote_cache_lock = asyncio.Lock()
+
+    async def spot_usdt_quotes() -> dict[str, Decimal]:
+        """Return a five-minute cache of direct spot asset/USDT closing prices."""
+
+        nonlocal quote_cache, quote_cache_at
+        now = time.monotonic()
+        if now - quote_cache_at < 300:
+            return quote_cache
+        async with quote_cache_lock:
+            now = time.monotonic()
+            if now - quote_cache_at < 300:
+                return quote_cache
+            payload = await api.spot_get_tickers()
+            quotes = {"USDT": Decimal(1)}
+            for ticker in _records(payload):
+                symbol = str(ticker.get("symbol", "")).upper()
+                close = _first_value(ticker, "close", "last", "last_price")
+                if not symbol.endswith("USDT") or close in (None, ""):
+                    continue
+                try:
+                    quotes[symbol.removesuffix("USDT")] = Decimal(str(close))
+                except InvalidOperation:
+                    continue
+            quote_cache = quotes
+            quote_cache_at = now
+            return quote_cache
+
+    async def compact_spot_balance_assets(
+        balances: Any,
+    ) -> tuple[dict[str, Any], int, int, bool]:
+        """Aggregate spot balances and hide dust or assets without a direct quote."""
+
+        if not isinstance(balances, dict) or not isinstance(balances.get("list"), list):
+            return {"assets": []}, 0, 0, False
+        totals: dict[str, Decimal] = {}
+        for record in balances["list"]:
+            if not isinstance(record, dict) or not record.get("currency"):
+                continue
+            amount = _spot_balance_amount(record)
+            if amount is None:
+                continue
+            asset = str(record["currency"]).upper()
+            totals[asset] = totals.get(asset, Decimal(0)) + amount
+        if not totals:
+            return {"assets": []}, 0, 0, False
+        stale_quotes = False
+        try:
+            quotes = await spot_usdt_quotes()
+        except (api.HtxError, ToolError, InvalidOperation):
+            quotes = quote_cache
+            stale_quotes = True
+        assets: list[dict[str, str]] = []
+        dust_count = 0
+        unpriced_count = 0
+        for asset, amount in sorted(totals.items()):
+            quote = quotes.get(asset)
+            if quote is None:
+                unpriced_count += 1
+                continue
+            value_usdt = amount * quote
+            if value_usdt.copy_abs() < Decimal("0.1"):
+                dust_count += 1
+                continue
+            assets.append(
+                {
+                    "asset": asset,
+                    "amount": _display_decimal(amount, significant_digits=8),
+                    "value_usdt": _display_decimal(value_usdt, places=2),
+                }
+            )
+        return {"assets": assets}, dust_count, unpriced_count, stale_quotes
+
     async def fetch_rules(product: str, instrument: str | None) -> dict[str, Any]:
         if product == "spot":
             code = api._symbol(instrument) if instrument else None
@@ -596,6 +700,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
         margin_mode: str,
         include: list[str] | None,
         include_raw: bool,
+        verbose: bool = False,
     ) -> dict[str, Any]:
         fields = set(
             include
@@ -627,7 +732,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                 raw[field] = response
                 data = _data(response)
                 result[field] = (
-                    _normalize_v5_balances(data)
+                    _normalize_v5_balances(data, verbose=verbose)
                     if field == "balances" and product == "swap" and using_v5
                     else data
                 )
@@ -654,6 +759,22 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                     account_id, api._symbol(instrument) if instrument else None
                 )
             await collect(calls)
+            if "balances" in result and not verbose:
+                (
+                    compact,
+                    dust_count,
+                    unpriced_count,
+                    stale_quotes,
+                ) = await compact_spot_balance_assets(result["balances"])
+                result["balances"] = compact
+                if dust_count:
+                    result["filtered_dust_asset_count"] = dust_count
+                if unpriced_count:
+                    result["filtered_unpriced_asset_count"] = unpriced_count
+                if stale_quotes:
+                    result["warnings"].append(
+                        "balances: using cached or unavailable spot USDT quotes"
+                    )
         else:
             code = api._contract(instrument) if instrument else None
             using_v5 = api.client.config.swap_api_version == "v5"
@@ -1124,9 +1245,9 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
         """Return only the requested, Decimal-calculated technical indicators.
 
         The model chooses which named indicators to inspect; it never calculates
-        them itself. Results are display-rounded to reduce token use: price-unit
-        series use eight significant digits and RSI/KDJ use four decimal places.
-        Raw K-lines remain available solely through the opt-in advanced
+        them itself. Results are display-rounded only at response time: EMA uses
+        candle price precision plus one decimal, MACD uses it plus three, and
+        RSI/KDJ use two decimal places. Raw K-lines remain available solely through the opt-in advanced
         compatibility toolset for research and diagnostics.
         """
 
@@ -1158,9 +1279,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             "completed_candles": len(candles),
             "omitted_incomplete_candles": omitted,
             "latest_completed_open_ms": candles[-1].open_time_ms if candles else None,
-            "indicators": compact_indicator_output(
-                calculate_indicators(candles, indicators)
-            ),
+            "indicators": calculate_indicators(candles, indicators),
         }
 
     @mcp.tool(annotations=api.READ, toolsets={"analysis"})
@@ -1255,6 +1374,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
 
         while True:
             observations: dict[str, Decimal] = {}
+            indicator_price_places: int | None = None
             poll_started = time.monotonic()
             try:
                 remaining = deadline - time.monotonic()
@@ -1296,7 +1416,8 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                             for candle in candles
                             if candle.open_time_ms + period_ms(candle_period) <= now_ms
                         ]
-                        indicator_values = calculate_indicators(
+                        indicator_price_places = price_decimal_places(candles)
+                        indicator_values = calculate_indicator_values(
                             candles, indicator_specs
                         )
                         for index, condition in enumerate(conditions):
@@ -1307,7 +1428,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                             value = result.get(condition.component)
                             if value is not None:
                                 observations[f"{canonical}/{condition.component}"] = (
-                                    Decimal(value)
+                                    value
                                 )
             except (
                 asyncio.TimeoutError,
@@ -1335,7 +1456,16 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
 
             if observations:
                 last_observations = {
-                    key: decimal_to_text(value) for key, value in observations.items()
+                    key: (
+                        decimal_to_text(value)
+                        if key == "last_price"
+                        else format_indicator_value(
+                            key.split("/", maxsplit=1)[0],
+                            value,
+                            price_places=indicator_price_places,
+                        )
+                    )
+                    for key, value in observations.items()
                 }
             matched_conditions: list[int] = []
             for index, condition in enumerate(conditions):
@@ -1430,6 +1560,12 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             ),
         ] = None,
         include_raw: IncludeRaw = False,
+        verbose: Annotated[
+            bool,
+            Field(
+                description="Return unfiltered per-record balance details for diagnostics. Defaults to false for a compact valued asset view."
+            ),
+        ] = False,
     ) -> AccountSnapshotResult:
         """Return a compact authenticated snapshot of balances, positions, and orders.
 
@@ -1437,7 +1573,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
         """
 
         return await fetch_account(
-            product, instrument, margin_mode, include, include_raw
+            product, instrument, margin_mode, include, include_raw, verbose
         )
 
     @mcp.tool(annotations=api.READ, toolsets={"analysis"})
@@ -1455,6 +1591,12 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                 description="Include zero-valued spot balance records for diagnostics. Defaults to false to keep the compact snapshot bounded."
             ),
         ] = False,
+        verbose: Annotated[
+            bool,
+            Field(
+                description="Return unfiltered per-record balance details for diagnostics. Defaults to false for a compact valued asset view."
+            ),
+        ] = False,
     ) -> dict[str, Any]:
         """Return one compact cross-product portfolio snapshot for account review.
 
@@ -1469,8 +1611,8 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             spot_fields.append("open_orders")
             swap_fields.append("open_orders")
         spot, swap = await asyncio.gather(
-            fetch_account("spot", None, margin_mode, spot_fields, False),
-            fetch_account("swap", None, margin_mode, swap_fields, False),
+            fetch_account("spot", None, margin_mode, spot_fields, False, verbose),
+            fetch_account("swap", None, margin_mode, swap_fields, False, verbose),
             return_exceptions=True,
         )
         result: dict[str, Any] = {
@@ -1485,7 +1627,8 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                 )
             else:
                 if (
-                    product == "spot"
+                    verbose
+                    and product == "spot"
                     and not include_zero_balances
                     and "balances" in snapshot
                 ):

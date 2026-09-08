@@ -195,10 +195,14 @@ def indicator_components(spec: str) -> set[str]:
     }.get(name, {"value"})
 
 
-def calculate_indicators(
+def calculate_indicator_values(
     candles: list[Candle], specs: list[str]
 ) -> dict[str, dict[str, Any]]:
-    """Calculate requested indicators using Decimal-only arithmetic."""
+    """Calculate requested indicators using Decimal-only arithmetic.
+
+    This internal representation retains ``Decimal`` values for consumers that
+    need to make an exact comparison, such as market-wait conditions.
+    """
 
     if not specs:
         raise ToolError("At least one indicator is required")
@@ -232,13 +236,13 @@ def calculate_indicators(
         with localcontext() as context:
             context.prec = 50
             if name == "sma":
-                output[key] = {"value": _text(_mean(closes[-period:]))}
+                output[key] = {"value": _mean(closes[-period:])}
             elif name == "ema":
                 value = _ema(closes, period)[-1]
                 assert value is not None
-                output[key] = {"value": _text(value)}
+                output[key] = {"value": value}
             elif name == "volume_sma":
-                output[key] = {"value": _text(_mean(volumes[-period:]))}
+                output[key] = {"value": _mean(volumes[-period:])}
             elif name == "bbands":
                 multiplier = Decimal(parameters[1])
                 middle = _mean(closes[-period:])
@@ -249,9 +253,9 @@ def calculate_indicators(
                 upper = middle + multiplier * deviation
                 lower = middle - multiplier * deviation
                 output[key] = {
-                    "upper": _text(upper),
-                    "middle": _text(middle),
-                    "lower": _text(lower),
+                    "upper": upper,
+                    "middle": middle,
+                    "lower": lower,
                 }
             elif name == "rsi":
                 changes = [
@@ -269,7 +273,7 @@ def calculate_indicators(
                     value = Decimal(100) - Decimal(100) / (
                         Decimal(1) + relative_strength
                     )
-                output[key] = {"value": _text(value)}
+                output[key] = {"value": value}
             elif name == "atr":
                 ranges = [highs[0] - lows[0]]
                 ranges.extend(
@@ -282,7 +286,7 @@ def calculate_indicators(
                 )
                 value = _wilder(ranges[1:], period)[-1]
                 assert value is not None
-                output[key] = {"value": _text(value)}
+                output[key] = {"value": value}
             elif name == "macd":
                 fast, slow, signal = (int(value) for value in parameters)
                 fast_values = _ema(closes, fast)
@@ -296,9 +300,9 @@ def calculate_indicators(
                 assert signal_value is not None
                 line_value = line[-1]
                 output[key] = {
-                    "macd": _text(line_value),
-                    "signal": _text(signal_value),
-                    "histogram": _text(line_value - signal_value),
+                    "macd": line_value,
+                    "signal": signal_value,
+                    "histogram": line_value - signal_value,
                 }
             elif name == "kdj":
                 k_period, k_smoothing, d_smoothing = (
@@ -322,38 +326,70 @@ def calculate_indicators(
                 d_value = _ema(k_series, d_smoothing)[-1]
                 assert k_value is not None and d_value is not None
                 output[key] = {
-                    "k": _text(k_value),
-                    "d": _text(d_value),
-                    "j": _text(Decimal(3) * k_value - Decimal(2) * d_value),
+                    "k": k_value,
+                    "d": d_value,
+                    "j": Decimal(3) * k_value - Decimal(2) * d_value,
                 }
     return output
 
 
-def compact_indicator_output(
-    indicators: dict[str, dict[str, Any]],
-) -> dict[str, dict[str, Any]]:
-    """Round display-only indicator values while preserving calculation results elsewhere.
+def price_decimal_places(candles: list[Candle]) -> int:
+    """Return the finest price scale present in the source candles."""
 
-    Price-unit series retain eight significant digits, oscillator values retain four
-    decimal places, and volume series retain eight significant digits. This is
-    intentionally applied only to the analysis response, never to wait-condition
-    evaluation or trade construction.
+    return max(
+        (
+            0,
+            *(
+                -value.as_tuple().exponent
+                for candle in candles
+                for value in (candle.open, candle.high, candle.low, candle.close)
+            ),
+        )
+    )
+
+
+def format_indicator_value(
+    specification: str, value: Decimal, *, price_places: int | None = None
+) -> str:
+    """Return one compact indicator value suitable for tool responses.
+
+    EMA uses source price precision plus one decimal place, MACD uses source
+    price precision plus three, and RSI/KDJ use two decimal places. Other series
+    retain eight significant digits.
     """
+    name = specification.partition(":")[0]
+    if name in {"rsi", "kdj"}:
+        formatter = {"places": 2}
+    elif name == "ema" and price_places is not None:
+        formatter = {"places": price_places + 1}
+    elif name == "macd" and price_places is not None:
+        formatter = {"places": price_places + 3}
+    else:
+        formatter = {"significant_digits": 8}
+    return _compact_text(_text(value), **formatter)
 
-    output: dict[str, dict[str, Any]] = {}
-    for specification, result in indicators.items():
-        name = specification.partition(":")[0]
-        if name in {"rsi", "kdj"}:
-            formatter = {"places": 4}
-        else:
-            formatter = {"significant_digits": 8}
-        output[specification] = {
-            field: (
-                _compact_text(value, **formatter)
-                if field not in {"status", "required_candles", "available_candles"}
-                and isinstance(value, str)
-                else value
-            )
-            for field, value in result.items()
-        }
-    return output
+
+def _format_indicator_result(
+    specification: str, result: dict[str, Any], *, price_places: int
+) -> dict[str, Any]:
+    """Return one normalized indicator result suitable for tool responses."""
+
+    return {
+        field: format_indicator_value(specification, value, price_places=price_places)
+        if isinstance(value, Decimal)
+        else value
+        for field, value in result.items()
+    }
+
+
+def calculate_indicators(
+    candles: list[Candle], specs: list[str]
+) -> dict[str, dict[str, Any]]:
+    """Calculate indicators and return compact, normalized display values."""
+
+    return {
+        specification: _format_indicator_result(
+            specification, result, price_places=price_decimal_places(candles)
+        )
+        for specification, result in calculate_indicator_values(candles, specs).items()
+    }

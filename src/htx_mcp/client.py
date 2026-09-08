@@ -8,6 +8,7 @@ to the official documentation instead of hiding exchange-specific behavior.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -94,6 +95,7 @@ class HtxConfig:
     base_url: str = "https://api.huobi.pro"
     futures_base_url: str = "https://api.hbdm.com"
     timeout_seconds: float = 20.0
+    read_retry_attempts: int = 2
     enable_trading: bool = False
     enable_swap_trading: bool = True
     spot_account_id: str | None = None
@@ -106,6 +108,17 @@ class HtxConfig:
             timeout = max(1.0, float(timeout_raw))
         except ValueError as exc:
             raise HtxConfigurationError("HTX_TIMEOUT_SECONDS must be a number") from exc
+        read_retry_raw = os.getenv("HTX_READ_RETRY_ATTEMPTS", "2")
+        try:
+            read_retry_attempts = int(read_retry_raw)
+        except ValueError as exc:
+            raise HtxConfigurationError(
+                "HTX_READ_RETRY_ATTEMPTS must be a non-negative integer"
+            ) from exc
+        if read_retry_attempts < 0:
+            raise HtxConfigurationError(
+                "HTX_READ_RETRY_ATTEMPTS must be a non-negative integer"
+            )
         swap_api_version = (os.getenv("HTX_SWAP_API_VERSION") or "v5").strip().lower()
         if swap_api_version not in {"v5", "legacy"}:
             raise HtxConfigurationError("HTX_SWAP_API_VERSION must be v5 or legacy")
@@ -119,6 +132,7 @@ class HtxConfig:
                 os.getenv("HTX_FUTURES_API_BASE_URL") or "https://api.hbdm.com"
             ).rstrip("/"),
             timeout_seconds=timeout,
+            read_retry_attempts=read_retry_attempts,
             enable_trading=_truthy(os.getenv("HTX_ENABLE_TRADING")),
             enable_swap_trading=_truthy(os.getenv("HTX_ENABLE_SWAP_TRADING", "true")),
             spot_account_id=_env_optional("HTX_SPOT_ACCOUNT_ID"),
@@ -265,10 +279,25 @@ class HtxClient:
             else:
                 request_kwargs["json"] = _json_ready(body)
 
-        try:
-            response = await self._http.request(method, url, **request_kwargs)
-        except httpx.HTTPError as exc:
-            raise HtxApiError(f"HTX request failed with {type(exc).__name__}") from exc
+        retryable_transport_errors = (
+            httpx.PoolTimeout,
+            httpx.ConnectTimeout,
+            httpx.ReadTimeout,
+        )
+        attempts = 1 + (self.config.read_retry_attempts if method == "GET" else 0)
+        for attempt in range(attempts):
+            try:
+                response = await self._http.request(method, url, **request_kwargs)
+                break
+            except httpx.HTTPError as exc:
+                if (
+                    not isinstance(exc, retryable_transport_errors)
+                    or attempt + 1 == attempts
+                ):
+                    raise HtxApiError(
+                        f"HTX request failed with {type(exc).__name__}"
+                    ) from exc
+                await asyncio.sleep(0.1 * (attempt + 1))
 
         try:
             payload = response.json()

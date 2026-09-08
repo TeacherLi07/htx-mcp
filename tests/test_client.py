@@ -5,12 +5,14 @@ import hmac
 from decimal import Decimal
 from urllib.parse import parse_qs, urlsplit
 
+import httpx
 import pytest
 
 from htx_mcp.client import (
     HtxApiError,
     HtxClient,
     HtxConfig,
+    HtxConfigurationError,
     _canonical_query,
     _env_optional,
     ensure_confirmation,
@@ -38,6 +40,18 @@ class FakeHttp:
 
     async def aclose(self):
         pass
+
+
+class RetryingHttp:
+    def __init__(self, failures):
+        self.failures = failures
+        self.calls = 0
+
+    async def request(self, method, url, **kwargs):
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise httpx.PoolTimeout("pool exhausted")
+        return FakeResponse({"status": "ok", "data": {"accepted": True}})
 
 
 def test_canonical_query_uses_ascii_order_and_percent20():
@@ -232,3 +246,35 @@ def test_optional_environment_values_are_trimmed(monkeypatch):
     assert _env_optional("HTX_TEST_VALUE") == "api-key-with-newline"
     monkeypatch.setenv("HTX_TEST_VALUE", "   ")
     assert _env_optional("HTX_TEST_VALUE") is None
+
+
+def test_get_retries_transient_pool_timeout():
+    http = RetryingHttp(failures=1)
+    client = HtxClient(
+        HtxConfig(read_retry_attempts=1),
+        http=http,
+    )
+
+    result = asyncio.run(client.request("GET", "/market/detail/merged"))
+
+    assert result["data"]["accepted"] is True
+    assert http.calls == 2
+
+
+def test_post_does_not_retry_transient_pool_timeout():
+    http = RetryingHttp(failures=1)
+    client = HtxClient(
+        HtxConfig(read_retry_attempts=2),
+        http=http,
+    )
+
+    with pytest.raises(HtxApiError, match="PoolTimeout"):
+        asyncio.run(client.request("POST", "/v1/order/orders/place", body={}))
+
+    assert http.calls == 1
+
+
+def test_rejects_invalid_read_retry_tuning(monkeypatch):
+    monkeypatch.setenv("HTX_READ_RETRY_ATTEMPTS", "-1")
+    with pytest.raises(HtxConfigurationError, match="non-negative integer"):
+        HtxConfig.from_env()

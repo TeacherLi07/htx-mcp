@@ -110,7 +110,7 @@ def test_log_level_configuration_is_platform_independent():
         configured_log_level("verbose")
 
 
-def test_tool_calls_log_redacted_inputs_and_structured_outputs(caplog):
+def test_tool_calls_log_only_compact_call_summaries(caplog):
     caplog.set_level(logging.INFO, logger=server.__name__)
 
     asyncio.run(
@@ -128,9 +128,10 @@ def test_tool_calls_log_redacted_inputs_and_structured_outputs(caplog):
     input_event = next(event for event in events if event["event"] == "tool_input")
     output_event = next(event for event in events if event["event"] == "tool_output")
     assert input_event["call_id"] == output_event["call_id"]
-    assert input_event["input"] == {"order_id": "123"}
+    assert len(input_event["call_id"]) == 12
+    assert "input" not in input_event
     assert output_event["output"]["is_error"] is False
-    assert output_event["output"]["structured_content"]["dry_run"] is True
+    assert "structured_content" not in output_event["output"]
     assert output_event["duration_ms"] >= 0
 
 

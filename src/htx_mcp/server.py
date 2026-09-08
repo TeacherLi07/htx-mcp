@@ -60,6 +60,105 @@ _SENSITIVE_LOG_KEYS = {
 _SENSITIVE_QUERY_VALUE = re.compile(
     r"(?i)(accesskeyid|api[_-]?key|api[_-]?secret|authorization|password|secret|signature|token)=([^&\s]+)"
 )
+_ID_FIELDS = {
+    "id",
+    "account_id",
+    "client_order_id",
+    "loan_order_id",
+    "order_id",
+    "plan_id",
+    "trade_id",
+}
+_TERMINAL_STATES = {"canceled", "cancelled", "filled", "rejected", "failed"}
+
+
+class _ShortIdRegistry:
+    """Map response-safe ID prefixes back to full exchange IDs in this process."""
+
+    def __init__(self) -> None:
+        self._aliases: dict[tuple[str, str], tuple[str, float | None]] = {}
+        self._full_aliases: dict[tuple[str, str], str] = {}
+
+    def _prune(self) -> None:
+        now = time.monotonic()
+        for key, (_value, expires_at) in list(self._aliases.items()):
+            if expires_at is not None and expires_at <= now:
+                full_value = self._aliases.pop(key)[0]
+                self._full_aliases.pop((key[0], full_value), None)
+
+    def shorten(self, field: str, value: str | int, *, terminal: bool) -> str | int:
+        text = str(value)
+        if len(text) <= 8 or text.startswith("<"):
+            return value
+        self._prune()
+        full_key = (field, text)
+        alias = self._full_aliases.get(full_key)
+        if alias is None:
+            length = 8
+            while (field, text[:length]) in self._aliases:
+                length += 1
+            alias = text[:length]
+            self._aliases[(field, alias)] = (text, None)
+            self._full_aliases[full_key] = alias
+        if terminal:
+            self._aliases[(field, alias)] = (text, time.monotonic() + 7 * 86400)
+        return alias
+
+    def resolve(self, field: str, value: Any) -> Any:
+        if not isinstance(value, (str, int)):
+            return value
+        self._prune()
+        text = str(value)
+        resolved = self._aliases.get((field, text))
+        if resolved is not None:
+            return resolved[0]
+        matches = {
+            full_value
+            for (_field, alias), (full_value, _expires_at) in self._aliases.items()
+            if alias == text
+        }
+        return matches.pop() if len(matches) == 1 else value
+
+
+_short_ids = _ShortIdRegistry()
+
+
+def _is_id_field(name: str) -> bool:
+    return name.lower().replace("-", "_") in _ID_FIELDS
+
+
+def _shorten_semantic_value(value: Any, *, terminal: bool = False) -> Any:
+    if isinstance(value, Mapping):
+        state = str(value.get("state", value.get("status", ""))).lower()
+        terminal = terminal or state in _TERMINAL_STATES
+        return {
+            str(key): (
+                _short_ids.shorten(str(key), item, terminal=terminal)
+                if _is_id_field(str(key)) and isinstance(item, (str, int))
+                else item
+                if str(key) == "raw"
+                else _shorten_semantic_value(item, terminal=terminal)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_shorten_semantic_value(item, terminal=terminal) for item in value]
+    return value
+
+
+def _resolve_semantic_ids(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(key): (
+                _short_ids.resolve(str(key), item)
+                if _is_id_field(str(key))
+                else _resolve_semantic_ids(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_resolve_semantic_ids(item) for item in value]
+    return value
 
 
 def _redact_log_value(value: Any) -> Any:
@@ -102,15 +201,9 @@ def _log_tool_event(event: str, **fields: Any) -> None:
 
 
 def _tool_result_for_log(result: Any) -> Any:
-    """Prefer the non-duplicated structured result when the SDK provides one."""
+    """Return a bounded success summary instead of duplicating tool payloads."""
 
-    structured = getattr(result, "structured_content", None)
-    if structured is not None:
-        return {
-            "is_error": bool(getattr(result, "is_error", False)),
-            "structured_content": structured,
-        }
-    return result
+    return {"is_error": bool(getattr(result, "is_error", False))}
 
 
 def _human_tool_title(function_name: str) -> str:
@@ -167,24 +260,31 @@ class HtxMcpServer(MCPServer):
         """Log every external tool invocation and its result at the MCP boundary."""
 
         call_id = uuid.uuid4().hex
+        log_call_id = call_id[:12]
         started = time.perf_counter()
         if logger.isEnabledFor(logging.INFO):
-            _log_tool_event("tool_input", call_id=call_id, tool=name, input=arguments)
+            _log_tool_event("tool_input", call_id=log_call_id, tool=name)
         try:
-            result = await super().call_tool(name, arguments, context)
+            result = await super().call_tool(
+                name,
+                _resolve_semantic_ids(arguments)
+                if name.startswith("htx_")
+                else arguments,
+                context,
+            )
         except Exception as exc:
             logger.error(
                 json.dumps(
                     _redact_log_value(
                         {
                             "event": "tool_error",
-                            "call_id": call_id,
+                            "call_id": log_call_id,
                             "tool": name,
                             "duration_ms": round(
                                 (time.perf_counter() - started) * 1000, 3
                             ),
                             "error_type": type(exc).__name__,
-                            "error": str(exc),
+                            "error": str(exc)[:240],
                         }
                     ),
                     ensure_ascii=False,
@@ -192,10 +292,17 @@ class HtxMcpServer(MCPServer):
                 )
             )
             raise
+        if (
+            name.startswith("htx_")
+            and getattr(result, "structured_content", None) is not None
+        ):
+            result.structured_content = _shorten_semantic_value(
+                result.structured_content
+            )
         if logger.isEnabledFor(logging.INFO):
             _log_tool_event(
                 "tool_output",
-                call_id=call_id,
+                call_id=log_call_id,
                 tool=name,
                 duration_ms=round((time.perf_counter() - started) * 1000, 3),
                 output=_tool_result_for_log(result),
