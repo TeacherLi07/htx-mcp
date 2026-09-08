@@ -133,7 +133,7 @@ def _enabled_toolsets() -> set[str] | None:
     if "core" in values:
         values.update({"analysis", "planning"})
     if "trading" in values:
-        values.update({"analysis", "planning", "execution"})
+        values.update({"analysis", "planning", "execution", "ops"})
     return values
 
 

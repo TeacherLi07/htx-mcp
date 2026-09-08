@@ -205,7 +205,7 @@ def test_v5_preview_uses_position_side_and_rejects_inline_leverage(monkeypatch):
                         "quantity": "1",
                         "price": "60000.1",
                         "position_side": "long",
-                        "client_order_id": "v5-order-1",
+                        "client_order_id": "1788830000001",
                     }
                 },
             )
@@ -238,7 +238,7 @@ def test_v5_preview_uses_position_side_and_rejects_inline_leverage(monkeypatch):
         "price": "60000.1",
         "time_in_force": "ioc",
         "reduce_only": 0,
-        "client_order_id": "v5-order-1",
+        "client_order_id": "1788830000001",
     }
     assert blocked["status"] == "blocked"
     assert "v5_leverage_must_be_set_separately" in {
@@ -670,7 +670,9 @@ def test_market_wait_returns_timeout_without_a_matching_condition(monkeypatch):
     )
 
     assert result.structured_content["status"] == "timed_out"
-    assert result.structured_content["polls"] == 2
+    assert result.structured_content["polls"] == 1
+    assert result.structured_content["poll_attempts"] == 1
+    assert result.structured_content["successful_polls"] == 1
     assert result.structured_content["matched_conditions"] == []
 
 
@@ -1145,13 +1147,176 @@ def test_swap_reconciliation_uses_client_order_id(monkeypatch):
     )
 
     assert result.is_error is False
+    assert result.structured_content["status"] == "found"
     assert result.structured_content["order"] == [
-        {"order_id": "987", "client_order_id": 123456}
+        {"order_id": "987", "client_order_id": 123456, "id": "987"}
     ]
     assert http.calls[-1][2]["json"] == {
         "contract_code": "BTC-USDT",
         "client_order_id": "123456",
     }
+
+
+def test_reconcile_blocks_invalid_swap_client_order_id_without_an_http_request(
+    monkeypatch,
+):
+    http = _install_router(monkeypatch, {})
+
+    result = asyncio.run(
+        mcp.call_tool(
+            "htx_reconcile_trade",
+            {
+                "product": "swap",
+                "instrument": "DOGE-USDT",
+                "client_order_id": "cx2609080108dg01",
+            },
+        )
+    ).structured_content
+
+    assert result == {
+        "product": "swap",
+        "instrument": "DOGE-USDT",
+        "status": "blocked",
+        "order": None,
+        "error": {
+            "error_type": "ValidationError",
+            "message": "swap client_order_id must be a decimal integer from 1 through 9223372036854775807",
+            "retryable": False,
+        },
+    }
+    assert http.calls == []
+
+
+def test_v5_preview_blocks_non_numeric_client_order_id(monkeypatch):
+    _install_router(
+        monkeypatch,
+        {
+            "/linear-swap-api/v1/swap_contract_info": _ok(
+                [{"contract_code": "DOGE-USDT", "volume_tick": "1", "min_volume": "1"}]
+            ),
+            "/linear-swap-ex/market/detail/merged": {
+                "status": "ok",
+                "tick": {"close": "0.1"},
+            },
+            "/linear-swap-ex/market/depth": {
+                "status": "ok",
+                "tick": {"bids": [], "asks": []},
+            },
+            "/linear-swap-api/v1/swap_price_limit": _ok([]),
+        },
+    )
+    original = server.client.config
+    server.client.config = replace(original, swap_api_version="v5")
+    try:
+        result = asyncio.run(
+            mcp.call_tool(
+                "htx_preview_trade",
+                {
+                    "intent": {
+                        "product": "swap",
+                        "instrument": "DOGE-USDT",
+                        "side": "buy",
+                        "quantity": "1",
+                        "client_order_id": "cx2609080108dg01",
+                    }
+                },
+            )
+        ).structured_content
+    finally:
+        server.client.config = original
+
+    assert result["status"] == "blocked"
+    assert "swap_client_order_id_format" in {
+        check["code"] for check in result["checks"]
+    }
+
+
+def test_portfolio_snapshot_filters_zero_spot_balances_and_normalizes_v5_margin(
+    monkeypatch,
+):
+    _install_router(
+        monkeypatch,
+        {
+            "/v1/account/accounts/1000/balance": _ok(
+                {
+                    "list": [
+                        {"currency": "usdt", "type": "trade", "balance": "24.99"},
+                        {
+                            "currency": "btc",
+                            "type": "trade",
+                            "balance": "0",
+                            "frozen": "0",
+                        },
+                        {"currency": "eth", "type": "frozen", "balance": "0"},
+                    ]
+                }
+            ),
+            "/v1/order/openOrders": _ok([]),
+            "/v5/account/balance": _ok(
+                {
+                    "equity": "0",
+                    "available_margin": "0",
+                    "assets": [
+                        {
+                            "currency": "USDT",
+                            "equity": "24.99223716",
+                            "available_margin": "21.96847082666666667",
+                        }
+                    ],
+                }
+            ),
+            "/v5/trade/position/opens": _ok([]),
+            "/v5/trade/order/opens": _ok([]),
+        },
+    )
+    original = server.client.config
+    server.client.config = replace(
+        original, swap_api_version="v5", spot_account_id="1000"
+    )
+    try:
+        result = asyncio.run(
+            mcp.call_tool("htx_get_portfolio_snapshot", {})
+        ).structured_content
+    finally:
+        server.client.config = original
+
+    spot = result["accounts"]["spot"]
+    swap = result["accounts"]["swap"]["balances"]
+    assert spot["balances"]["list"] == [
+        {"currency": "usdt", "type": "trade", "balance": "24.99"}
+    ]
+    assert spot["filtered_zero_balance_count"] == 2
+    assert swap["primary_margin_asset"] == "USDT"
+    assert swap["equity"] == "24.99223716"
+    assert swap["available_margin"] == "21.96847082666666667"
+
+
+def test_reconcile_keeps_order_id_when_v5_canceled_record_has_null_id(monkeypatch):
+    _install_router(
+        monkeypatch,
+        {
+            "/v5/trade/order": _ok(
+                {"id": None, "order_id": "1546810734811971584", "state": "canceled"}
+            )
+        },
+    )
+    original = server.client.config
+    server.client.config = replace(original, swap_api_version="v5")
+    try:
+        result = asyncio.run(
+            mcp.call_tool(
+                "htx_reconcile_trade",
+                {
+                    "product": "swap",
+                    "instrument": "DOGE-USDT",
+                    "order_id": "1546810734811971584",
+                },
+            )
+        ).structured_content
+    finally:
+        server.client.config = original
+
+    assert result["order"]["id"] == "1546810734811971584"
 
 
 def test_spot_market_order_preview_omits_supplied_price(monkeypatch):

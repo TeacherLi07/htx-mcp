@@ -212,7 +212,7 @@ def _wire(value: Any) -> Any:
 
 def _client_order_id(
     product: str, value: str | int | None, *, allow_v5_strings: bool = False
-) -> str | int | None:
+) -> str | None:
     """Validate product-specific order IDs used outside TradeIntent."""
 
     if value is None:
@@ -225,23 +225,109 @@ def _client_order_id(
                 "spot client_order_id must contain 1-64 letters, digits, underscores, or hyphens"
             )
         return value
-    if isinstance(value, int) and not isinstance(value, bool):
-        if 1 <= value <= 9223372036854775807:
-            return value
-    elif (
-        allow_v5_strings
-        and isinstance(value, str)
-        and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value)
-    ):
-        return value
-    if allow_v5_strings:
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
         raise ToolError(
-            "v5 swap client_order_id must be an integer or a 1-64 character identifier"
+            "swap client_order_id must be a decimal integer from 1 through 9223372036854775807"
         )
-    else:
+    text = str(value)
+    if not re.fullmatch(r"[0-9]+", text) or not 1 <= int(text) <= 9223372036854775807:
         raise ToolError(
-            "swap client_order_id must be an integer from 1 through 9223372036854775807"
+            "swap client_order_id must be a decimal integer from 1 through 9223372036854775807"
         )
+    return str(int(text))
+
+
+def _swap_client_order_id_text(value: str | int | None) -> str | None:
+    """Canonicalize valid swap IDs while allowing a blocked preview to show input."""
+
+    if value is None:
+        return None
+    text = str(value)
+    if re.fullmatch(r"[0-9]+", text) and 1 <= int(text) <= 9223372036854775807:
+        return str(int(text))
+    return text
+
+
+def _normalized_order_id(record: Any) -> Any:
+    """Preserve the semantic order ID across HTX terminal-state variants."""
+
+    if isinstance(record, list):
+        return [_normalized_order_id(item) for item in record]
+    if not isinstance(record, dict):
+        return record
+    normalized = dict(record)
+    order_id = _first_value(normalized, "id", "order_id", "order_id_str", "order-id")
+    if order_id is not None:
+        normalized["id"] = str(order_id)
+    return normalized
+
+
+def _read_error(api: ModuleType, error: Exception) -> dict[str, Any]:
+    """Return a sanitized, retry-classified diagnostic for semantic read tools."""
+
+    report = api._diagnostic_error(error)
+    status = report.get("http_status")
+    report["retryable"] = isinstance(error, asyncio.TimeoutError) or (
+        isinstance(status, int) and (status == 408 or status == 429 or status >= 500)
+    )
+    return report
+
+
+def _is_zero_balance(record: dict[str, Any]) -> bool:
+    """Whether an HTX spot balance record has explicit numeric values all at zero."""
+
+    values = [
+        record[key]
+        for key in ("balance", "available", "frozen", "debt")
+        if key in record and record[key] not in (None, "")
+    ]
+    if not values:
+        return False
+    try:
+        return all(Decimal(str(value)) == 0 for value in values)
+    except InvalidOperation:
+        return False
+
+
+def _compact_spot_balances(balances: Any) -> tuple[Any, int]:
+    if not isinstance(balances, dict) or not isinstance(balances.get("list"), list):
+        return balances, 0
+    kept = [
+        item
+        for item in balances["list"]
+        if not isinstance(item, dict) or not _is_zero_balance(item)
+    ]
+    return {**balances, "list": kept}, len(balances["list"]) - len(kept)
+
+
+def _normalize_v5_balances(balances: Any) -> Any:
+    """Expose verified per-asset V5 margin totals without trusting zero envelopes."""
+
+    if not isinstance(balances, dict):
+        return balances
+    assets = balances.get("assets")
+    if not isinstance(assets, list):
+        return balances
+    details = {
+        str(asset.get("currency")).upper(): asset
+        for asset in assets
+        if isinstance(asset, dict) and asset.get("currency")
+    }
+    primary = details.get("USDT") or next(iter(details.values()), None)
+    if not isinstance(primary, dict):
+        return balances
+    numeric_fields = ("equity", "available_margin", "available", "margin_balance")
+    if not any(primary.get(field) not in (None, "") for field in numeric_fields):
+        return balances
+    normalized = {
+        **balances,
+        "details": details,
+        "primary_margin_asset": str(primary["currency"]).upper(),
+    }
+    for field in numeric_fields:
+        if primary.get(field) not in (None, ""):
+            normalized[field] = _number_text(primary[field])
+    return normalized
 
 
 def _first_value(record: dict[str, Any], *keys: str) -> Any:
@@ -539,7 +625,12 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                     )
                     continue
                 raw[field] = response
-                result[field] = _data(response)
+                data = _data(response)
+                result[field] = (
+                    _normalize_v5_balances(data)
+                    if field == "balances" and product == "swap" and using_v5
+                    else data
+                )
 
         if product == "spot":
             unsupported = fields.intersection({"positions", "api_status"})
@@ -693,9 +784,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                 ),
                 time_in_force={"ioc": "ioc", "fok": "fok"}.get(intent.order_kind),
                 reduce_only=1 if intent.reduce_only or intent.action != "open" else 0,
-                client_order_id=str(intent.client_order_id)
-                if intent.client_order_id is not None
-                else None,
+                client_order_id=_swap_client_order_id_text(intent.client_order_id),
                 tp_trigger_price=decimal_to_text(intent.take_profit.trigger_price)
                 if intent.take_profit
                 else None,
@@ -755,6 +844,18 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             else api._contract(intent.instrument)
         )
         checks: list[dict[str, str]] = []
+        if intent.product == "swap" and intent.client_order_id is not None:
+            text = str(intent.client_order_id)
+            if (
+                not re.fullmatch(r"[0-9]+", text)
+                or not 1 <= int(text) <= 9223372036854775807
+            ):
+                _check(
+                    checks,
+                    "error",
+                    "swap_client_order_id_format",
+                    "V5 and legacy swap order endpoints require client_order_id to be a decimal integer from 1 through 9223372036854775807.",
+                )
         if (
             intent.product == "swap"
             and api.client.config.swap_api_version == "v5"
@@ -765,17 +866,6 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                 "error",
                 "v5_leverage_must_be_set_separately",
                 "V5 leverage must be set with futures_v5_set_leverage before submitting this trade.",
-            )
-        if (
-            intent.product == "swap"
-            and api.client.config.swap_api_version == "legacy"
-            and isinstance(intent.client_order_id, str)
-        ):
-            _check(
-                checks,
-                "error",
-                "legacy_client_order_id_type",
-                "Legacy swap endpoints require an integer client_order_id.",
             )
         if intent.product == "spot" and intent.action != "open":
             _check(
@@ -1105,8 +1195,8 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             int,
             Field(
                 ge=1,
-                le=300,
-                description="Hard maximum blocking duration. The tool always returns by this deadline; it cannot wait indefinitely.",
+                le=3600,
+                description="Hard maximum blocking duration (one hour). The budget includes polls and sleeps. Configure the MCP host tool deadline and outer yield_time_ms longer than this value so this tool, rather than an intermediate host yield, is the wake-up source.",
             ),
         ] = 60,
         poll_interval_seconds: Annotated[
@@ -1114,7 +1204,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             Field(
                 ge=1,
                 le=60,
-                description="Minimum seconds between read-only market polls. A larger interval reduces API use but increases wake latency.",
+                description="Target minimum interval between read-only poll starts. A larger interval reduces API use but increases wake latency.",
             ),
         ] = 5,
     ) -> MarketWaitResult:
@@ -1125,8 +1215,11 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
         A future WebSocket market daemon can satisfy the identical contract.
 
         Important: while this call is pending, the agent receives no intermediate
-        market updates and cannot react to them. Use it only when deferring
-        analysis is intentional, then re-check market snapshots after every return.
+        market updates and cannot react to them. For an uninterrupted wait, set
+        the outer host ``yield_time_ms`` longer than ``timeout_seconds * 1000``
+        (with response margin) and set the host tool deadline longer still. The
+        MCP result then becomes the sole wake-up source; then re-check market
+        snapshots after every return.
         """
 
         period_ms(candle_period)
@@ -1150,15 +1243,19 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
         started_at_ms = int(time.time() * 1000)
         deadline = started_monotonic + timeout_seconds
         polls = 0
-        warnings: list[str] = []
+        successful_polls = 0
+        failed_polls = 0
+        last_success_at_ms: int | None = None
+        warnings: list[Any] = []
         last_observations: dict[str, str | None] = {}
 
         while True:
-            polls += 1
             observations: dict[str, Decimal] = {}
+            poll_started = time.monotonic()
             try:
                 remaining = deadline - time.monotonic()
                 if remaining > 0:
+                    polls += 1
                     calls: dict[str, Any] = {}
                     if need_ticker:
                         calls["ticker"] = (
@@ -1179,6 +1276,8 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                     results = await asyncio.wait_for(
                         asyncio.gather(*calls.values()), timeout=remaining
                     )
+                    successful_polls += 1
+                    last_success_at_ms = int(time.time() * 1000)
                     payloads = dict(zip(calls, results))
                     if "ticker" in payloads:
                         last = _ticker(payloads["ticker"])["last"]
@@ -1213,8 +1312,20 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                 ValueError,
                 InvalidOperation,
             ) as exc:
+                failed_polls += 1
                 if len(warnings) < 10:
-                    warnings.append(f"poll {polls}: {type(exc).__name__}: {exc}")
+                    message = str(exc) or "operation timed out"
+                    warnings.append(
+                        {
+                            "poll": polls,
+                            "error_type": type(exc).__name__,
+                            "message": message,
+                            "retryable": isinstance(
+                                exc, (asyncio.TimeoutError, HtxApiError)
+                            ),
+                            "at_ms": int(time.time() * 1000),
+                        }
+                    )
                 elif len(warnings) == 10:
                     warnings.append("Additional failed polls are omitted.")
 
@@ -1263,11 +1374,23 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                     "finished_at_ms": finished_at_ms,
                     "elapsed_ms": round((now_monotonic - started_monotonic) * 1000),
                     "polls": polls,
+                    "requested_timeout_ms": timeout_seconds * 1000,
+                    "effective_deadline_ms": started_at_ms + timeout_seconds * 1000,
+                    "poll_attempts": polls,
+                    "successful_polls": successful_polls,
+                    "failed_polls": failed_polls,
+                    "last_success_at_ms": last_success_at_ms,
+                    "observation_age_ms": (
+                        max(0, int(time.time() * 1000) - last_success_at_ms)
+                        if last_success_at_ms is not None
+                        else None
+                    ),
                     "observations": last_observations,
                     "matched_conditions": matched_conditions,
                     "warnings": warnings,
                 }
-            await asyncio.sleep(min(poll_interval_seconds, deadline - now_monotonic))
+            cadence_delay = poll_interval_seconds - (time.monotonic() - poll_started)
+            await asyncio.sleep(min(max(0, cadence_delay), deadline - now_monotonic))
 
     @mcp.tool(annotations=api.READ, toolsets={"analysis"})
     async def htx_get_instrument_rules(
@@ -1322,6 +1445,12 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                 description="Include active orders. For legacy swaps this requires a per-contract account snapshot, so the result reports that limitation as a warning."
             ),
         ] = True,
+        include_zero_balances: Annotated[
+            bool,
+            Field(
+                description="Include zero-valued spot balance records for diagnostics. Defaults to false to keep the compact snapshot bounded."
+            ),
+        ] = False,
     ) -> dict[str, Any]:
         """Return one compact cross-product portfolio snapshot for account review.
 
@@ -1351,6 +1480,15 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                     f"{product}: {type(snapshot).__name__}: {snapshot}"
                 )
             else:
+                if (
+                    product == "spot"
+                    and not include_zero_balances
+                    and "balances" in snapshot
+                ):
+                    compact, filtered = _compact_spot_balances(snapshot["balances"])
+                    snapshot = {**snapshot, "balances": compact}
+                    if filtered:
+                        snapshot["filtered_zero_balance_count"] = filtered
                 result["accounts"][product] = snapshot
                 result["warnings"].extend(
                     f"{product}: {warning}" for warning in snapshot.get("warnings", [])
@@ -1902,36 +2040,58 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
 
         if not order_id and not client_order_id:
             raise ToolError("order_id or client_order_id is required")
-        client_order_id = _client_order_id(
-            product,
-            client_order_id,
-            allow_v5_strings=(
-                product == "swap" and api.client.config.swap_api_version == "v5"
-            ),
-        )
-        if product == "spot":
-            if client_order_id and not order_id:
-                payload = await api.spot_get_order_by_client_id(client_order_id)
+        try:
+            client_order_id = _client_order_id(
+                product, client_order_id, allow_v5_strings=False
+            )
+        except ToolError as exc:
+            return {
+                "product": product,
+                "instrument": instrument,
+                "status": "blocked",
+                "order": None,
+                "error": {
+                    "error_type": "ValidationError",
+                    "message": str(exc),
+                    "retryable": False,
+                },
+            }
+        try:
+            if product == "spot":
+                if client_order_id and not order_id:
+                    payload = await api.spot_get_order_by_client_id(client_order_id)
+                else:
+                    payload = await api.spot_get_order(order_id or "")
             else:
-                payload = await api.spot_get_order(order_id or "")
-        else:
-            if api.client.config.swap_api_version == "v5":
-                payload = await api.v5_get_order(
-                    api._contract(instrument),
-                    order_id=order_id,
-                    client_order_id=str(client_order_id)
-                    if client_order_id is not None
-                    else None,
-                    margin_mode=margin_mode,
-                )
-            else:
-                payload = await api.futures_get_order_info(
-                    api._contract(instrument),
-                    order_id=order_id,
-                    margin_mode=margin_mode,
-                    client_order_id=client_order_id,
-                )
-        return {"product": product, "instrument": instrument, "order": _data(payload)}
+                if api.client.config.swap_api_version == "v5":
+                    payload = await api.v5_get_order(
+                        api._contract(instrument),
+                        order_id=order_id,
+                        client_order_id=client_order_id,
+                        margin_mode=margin_mode,
+                    )
+                else:
+                    payload = await api.futures_get_order_info(
+                        api._contract(instrument),
+                        order_id=order_id,
+                        margin_mode=margin_mode,
+                        client_order_id=client_order_id,
+                    )
+        except api.HtxError as exc:
+            error = _read_error(api, exc)
+            return {
+                "product": product,
+                "instrument": instrument,
+                "status": "not_found" if error.get("http_status") == 404 else "error",
+                "order": None,
+                "error": error,
+            }
+        return {
+            "product": product,
+            "instrument": instrument,
+            "status": "found",
+            "order": _normalized_order_id(_data(payload)),
+        }
 
     @mcp.tool(annotations=api.WRITE, toolsets={"execution"})
     async def htx_cancel_trade(

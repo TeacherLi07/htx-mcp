@@ -80,9 +80,16 @@ class MarketWaitResult(TypedDict):
     finished_at_ms: int
     elapsed_ms: int
     polls: int
+    requested_timeout_ms: int
+    effective_deadline_ms: int
+    poll_attempts: int
+    successful_polls: int
+    failed_polls: int
+    last_success_at_ms: int | None
+    observation_age_ms: int | None
     observations: dict[str, str | None]
     matched_conditions: list[int]
-    warnings: list[str]
+    warnings: list[Any]
 
 
 class InstrumentRulesResult(TypedDict):
@@ -157,7 +164,9 @@ class TradeSubmissionResult(TypedDict):
 class ReconcileTradeResult(TypedDict):
     product: Literal["spot", "swap"]
     instrument: str
-    order: Any
+    order: Any | None
+    status: NotRequired[Literal["found", "not_found", "blocked", "error"]]
+    error: NotRequired[dict[str, Any]]
 
 
 class SpotMarginAction(BaseModel):
@@ -281,7 +290,7 @@ class TradeIntent(BaseModel):
     )
     client_order_id: str | int | None = Field(
         default=None,
-        description="Optional reconciliation ID: a 1-64 character identifier for spot; v5 swaps also accept a 1-64 character identifier or a positive 64-bit integer, while legacy swaps require the integer form.",
+        description="Optional reconciliation ID: spot accepts a 1-64 character identifier; swap order endpoints accept a decimal positive 64-bit integer only.",
     )
     take_profit: ProtectionSpec | None = Field(
         default=None,
@@ -304,15 +313,8 @@ class TradeIntent(BaseModel):
                 raise ValueError(
                     "spot client_order_id must contain 1-64 letters, digits, underscores, or hyphens"
                 )
-        elif isinstance(value, int) and not isinstance(value, bool):
-            if not 1 <= value <= 9223372036854775807:
-                raise ValueError(
-                    "swap integer client_order_id must be from 1 through 9223372036854775807"
-                )
-        elif not isinstance(value, str) or not re.fullmatch(
-            r"[A-Za-z0-9_-]{1,64}", value
-        ):
+        elif isinstance(value, bool) or not isinstance(value, (str, int)):
             raise ValueError(
-                "swap client_order_id must be an integer or a 1-64 character v5 identifier"
+                "swap client_order_id must be a decimal integer from 1 through 9223372036854775807"
             )
         return self

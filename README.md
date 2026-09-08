@@ -49,7 +49,7 @@ uv run pytest -q
 | `HTX_TIMEOUT_SECONDS` | `20` | 单次 HTTP 请求超时 |
 | `HTX_ENABLE_TRADING` | `false` | 是否允许写接口真正发往 HTX；`false` 时所有写工具只返回 dry-run |
 | `HTX_ENABLE_SWAP_TRADING` | `true` | 是否允许 U 本位合约写接口；`false` 时合约下单、撤单、杠杆和策略写入均只返回 dry-run，现货写接口不受影响 |
-| `HTX_TOOLSETS` | `analysis,planning,ops` | 工具集 allow-list：`analysis`、`planning`、`execution`、`advanced`、`ops`；`core` 等价于 analysis+planning，`trading` 等价于 analysis+planning+execution，`all` 发布完整兼容层 |
+| `HTX_TOOLSETS` | `analysis,planning,ops` | 工具集 allow-list：`analysis`、`planning`、`execution`、`advanced`、`ops`；`core` 等价于 analysis+planning，`trading` 等价于 analysis+planning+execution+ops，`all` 发布完整兼容层 |
 | `MCP_TRANSPORT` | `stdio` | `stdio`、`sse` 或 `streamable-http` |
 | `HTX_LOG_LEVEL` | `INFO` | 文件日志级别：`DEBUG`、`INFO`、`WARNING`、`ERROR` 或 `CRITICAL` |
 | `HTX_LOG_DIR` | `~/.htxmcp` | 日志目录；支持 Windows 和 Ubuntu 路径以及 `~` 展开 |
@@ -267,7 +267,7 @@ TP/SL 和 `reduce_only` 等可选字段。时间参数统一使用 Unix 毫秒�
 高精度交易参数建议传字符串，例如 `"0.00000001"` 或 `"60000.123456789012345678"`，
 不要依赖 JSON 浮点数表达超高精度价格。
 
-`client_order_id` 按产品使用不同类型：现货接受 1-64 位字母、数字、下划线或连字符；
+`client_order_id` 按产品使用不同类型：现货接受 1-64 位字母、数字、下划线或连字符；合约普通订单只接受范围 `1..2^63-1` 的十进制正整数（字符串必须全为数字，发送前会规范化为精确字符串）。
 U 本位合约接受 `1` 到 `9223372036854775807` 的整数。合约查询和撤单会在 HTX 边界按接口
 要求转换为字符串，不要给合约订单使用带字母的 client ID。
 
@@ -275,7 +275,7 @@ U 本位合约接受 `1` 到 `9223372036854775807` 的整数。合约查询和�
 
 当前 API 映射工具仍完整保留在 `advanced` 工具集中；高层语义工具负责聚合常用工作流：
 
-- `analysis`：`htx_get_market_snapshot`、`htx_get_market_context`、`htx_get_technical_indicators`、`htx_wait_for_market_event`、`htx_get_instrument_rules`、`htx_get_account_snapshot`、`htx_get_portfolio_snapshot`、`htx_get_trade_history`、`htx_get_risk_snapshot`、`htx_get_spot_margin_snapshot`。`htx_get_portfolio_snapshot` 是跨现货和合约的盘前账户总览；V5 合约会返回所有合约的当前挂单。`htx_get_market_context` 按需以统一固定点字段返回 K 线、近期成交和合约历史资金费率，供需要审阅市场行为的 REST 分析使用。`htx_get_trade_history` 以统一字段返回实际成交、价格、数量、手续费和时间；复核单笔委托时传 `order_id`，研究近期执行质量时按标的、时间窗和游标分页。`htx_get_technical_indicators` 只返回模型请求的确定性指标（SMA/EMA、RSI、ATR、成交量均线、布林带、MACD、KDJ），默认排除未收盘 K 线；日常分析不暴露原始 K 线。`htx_wait_for_market_event` 只接受有上限的声明式价格/指标阈值，超时必定返回且不执行写操作。需要研究或排障时，`advanced` 工具集仍提供完整兼容层。
+- `analysis`：`htx_get_market_snapshot`、`htx_get_market_context`、`htx_get_technical_indicators`、`htx_wait_for_market_event`、`htx_get_instrument_rules`、`htx_get_account_snapshot`、`htx_get_portfolio_snapshot`、`htx_get_trade_history`、`htx_get_risk_snapshot`、`htx_get_spot_margin_snapshot`。`htx_get_portfolio_snapshot` 是跨现货和合约的盘前账户总览；V5 合约会返回所有合约的当前挂单。`htx_get_market_context` 按需以统一固定点字段返回 K 线、近期成交和合约历史资金费率，供需要审阅市场行为的 REST 分析使用。`htx_get_trade_history` 以统一字段返回实际成交、价格、数量、手续费和时间；复核单笔委托时传 `order_id`，研究近期执行质量时按标的、时间窗和游标分页。`htx_get_technical_indicators` 只返回模型请求的确定性指标（SMA/EMA、RSI、ATR、成交量均线、布林带、MACD、KDJ），默认排除未收盘 K 线；日常分析不暴露原始 K 线。`htx_wait_for_market_event` 只接受有上限的声明式价格/指标阈值，最长一小时且不执行写操作。要让它成为唯一唤醒来源，将外层 `yield_time_ms` 设为大于工具 `timeout_seconds`（毫秒）的值并预留响应余量，同时确保 MCP host 的 tool timeout 更长；中途不要 yield。需要研究或排障时，`advanced` 工具集仍提供完整兼容层。
 
 等待工具在条件满足或超时前不会向 LLM 发送中间市场更新；仅在有意延后分析时使用，并在工具返回后重新获取市场快照。
 - `planning`：`htx_validate_trade_intent`、`htx_preview_trade`、`htx_reconcile_trade`、`htx_plan_spot_margin_action`。
