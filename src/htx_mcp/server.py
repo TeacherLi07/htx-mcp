@@ -1050,7 +1050,8 @@ def trade_preflight_prompt(
         "2. Convert the fields above into one TradeIntent, preserving decimal values as strings, and call "
         "htx_validate_trade_intent. If its status is ready, call htx_preview_trade.\n"
         "3. Report blocking checks, warnings, normalized request, and whether stop/target direction is valid. "
-        "Do not set confirm=true; leave execution to a separate explicit user request."
+        "Do not set confirm=true in this preflight. A separate execution phase may submit only an action "
+        "covered by the user's current authorization scope."
     )
 
 

@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.6.3 - 2026-09-08
+
+- Package the HTX MCP server and trading workflows as the `HTX Trader` Codex plugin.
+- Add skills for market research, trade planning, guarded execution, margin operations, and diagnostics.
+- Define conversation-scoped user authorization for autonomous trade actions while preserving MCP execution gates and reconciliation.
 
 - Keep V5 swap client order IDs numeric, matching the current CCXT HTX implementation and observed exchange validation.
 - Add semantic V5 batch submission plus product-neutral batch and all-open-order cancellation tools.

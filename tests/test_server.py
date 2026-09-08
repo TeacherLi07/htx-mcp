@@ -336,7 +336,8 @@ def test_trade_preflight_prompt_stays_read_only_and_uses_semantic_tools():
     assert "htx_validate_trade_intent" in text
     assert "htx_preview_trade" in text
     assert "do not call execution tools" in text
-    assert "Do not set confirm=true" in text
+    assert "Do not set confirm=true in this preflight" in text
+    assert "current authorization scope" in text
     assert "- Product: swap" in text
     assert "- Action: open" in text
 

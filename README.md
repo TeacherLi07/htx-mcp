@@ -3,6 +3,10 @@
 这是一个基于 HTX 官方 REST API 的 Python MCP Server，使用 `uv` 管理环境，覆盖
 现货与 USDT 本位合约的行情、账户、订单、仓位、策略单、杠杆和历史数据。
 
+仓库现在以可安装的 `HTX Trader` plugin 为主要交付物；MCP 是它的实时数据和受控执行
+边界，skills 则为市场研究、交易规划、受保护执行、杠杆操作和排障提供按需加载的工作流。
+plugin 位于 `plugins/htx-trader/`。
+
 服务通过 MCP 暴露三类能力：
 
 - Tools：行情查询、账户查询、下单、撤单、仓位和策略单操作。
@@ -95,7 +99,24 @@ uv run python scripts/switch_to_non_unified_account.py --confirm-switch-to-non-u
 若 HTX 返回错误，可追加 `--diagnostics` 生成工单所需的脱敏请求端点、请求体和原始响应 JSON；
 认证查询参数不会输出。
 
-### Codex
+### Codex plugin
+
+`plugins/htx-trader/` 是本仓库的 Codex plugin。它默认启动只读的语义化
+`analysis,planning,ops` 工具面，并将 HTX 凭据从宿主环境转发给 MCP 进程。它同时提供：
+
+- `htx-market-research`：市场研究、监控条件和有界等待；无交易条件时在 `trading/` 留下观察计划。
+- `htx-trading-desk`：持续实盘测试的总控路由，协调研究、计划、等待和本地交易笔记。
+- `htx-trade-plan`：从实时状态到规范化、已校验的交易计划。
+- `htx-guarded-execution`：在当前用户授权范围内执行，并在执行后对账。
+- `htx-margin-operations`：杠杆资金、借还款和杠杆订单的独立流程。
+- `htx-operations`：私有 API、工具集和账户模式排障。
+
+安装 plugin 后，若需要真实交易，必须由部署者显式将 plugin 的 MCP 配置改为
+`HTX_TOOLSETS="trading"` 和 `HTX_ENABLE_TRADING="true"`；skills 不会绕过服务端双重确认。
+用户的交易授权范围只约束 agent 行为；它不是 MCP 服务端的权限策略，并且默认仅在当前对话有效。
+低层端点仍由 `HTX_TOOLSETS=all` 提供，供高级兼容与诊断使用。
+
+### Direct Codex MCP configuration
 
 将以下配置添加到用户级 `~/.codex/config.toml`，或受信任项目的
 `.codex/config.toml`。先在启动 Codex 的本地环境中设置 `HTX_API_KEY` 和

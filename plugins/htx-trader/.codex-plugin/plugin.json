@@ -1,0 +1,23 @@
+{
+  "name": "htx-trader",
+  "version": "0.6.3",
+  "description": "HTX market research, trade planning, and guarded execution.",
+  "author": {
+    "name": "HTX MCP maintainers"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "HTX Trader",
+    "shortDescription": "Research HTX markets and execute guarded trades.",
+    "longDescription": "A workflow-oriented HTX trading plugin with live market analysis, trade planning, guarded execution, and operational diagnostics.",
+    "developerName": "HTX MCP maintainers",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Write"],
+    "defaultPrompt": [
+      "Review BTC-USDT and propose a trade only if conditions are met.",
+      "Create a monitored watchlist and wait for a confirmed market event.",
+      "Review my HTX portfolio and open orders."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

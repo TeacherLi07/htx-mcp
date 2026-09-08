@@ -1927,7 +1927,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
     async def htx_execute_spot_margin_action(
         action: SpotMarginAction, confirm: Confirm = False
     ) -> SpotMarginExecutionResult:
-        """Revalidate then execute one explicit spot-margin funding action behind both safety gates.
+        """Revalidate then execute one supplied spot-margin funding action behind both safety gates.
 
         Use the snapshot and plan tools first. After a confirmed mutation, refresh the snapshot because interest, risk, and transferable balances may have changed.
         """
