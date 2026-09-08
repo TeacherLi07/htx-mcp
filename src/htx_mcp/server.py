@@ -133,7 +133,7 @@ def _enabled_toolsets() -> set[str] | None:
     if "core" in values:
         values.update({"analysis", "planning"})
     if "trading" in values:
-        values.update({"analysis", "planning", "execution", "ops"})
+        values.update({"analysis", "planning", "execution"})
     return values
 
 
@@ -796,7 +796,7 @@ def _wire_body(value: Any) -> Any:
 async def _mutation(
     tool_name: str,
     path: str,
-    body: dict[str, Any] | None,
+    body: Any | None,
     confirm: bool,
     *,
     mode: str = "POST",

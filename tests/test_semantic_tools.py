@@ -1231,6 +1231,160 @@ def test_v5_preview_blocks_non_numeric_client_order_id(monkeypatch):
     }
 
 
+def test_v5_close_position_preserves_hedge_position_side(monkeypatch):
+    _install_router(
+        monkeypatch,
+        {
+            "/linear-swap-api/v1/swap_contract_info": _ok(
+                [
+                    {
+                        "contract_code": "BTC-USDT",
+                        "volume_tick": "1",
+                        "price_tick": "0.1",
+                        "min_volume": "1",
+                    }
+                ]
+            ),
+            "/linear-swap-ex/market/detail/merged": {
+                "status": "ok",
+                "tick": {"close": "60000.1", "bid": [], "ask": []},
+            },
+            "/linear-swap-ex/market/depth": {
+                "status": "ok",
+                "tick": {"bids": [], "asks": []},
+            },
+            "/linear-swap-api/v1/swap_price_limit": _ok([]),
+        },
+    )
+    original = server.client.config
+    server.client.config = replace(original, swap_api_version="v5")
+    try:
+        result = asyncio.run(
+            mcp.call_tool(
+                "htx_close_position",
+                {
+                    "instrument": "BTC-USDT",
+                    "quantity": "1",
+                    "side": "sell",
+                    "position_side": "long",
+                },
+            )
+        ).structured_content
+    finally:
+        server.client.config = original
+
+    assert result["validation"]["request"]["position_side"] == "long"
+    assert result["validation"]["request"]["reduce_only"] == 1
+
+
+def test_v5_batch_tools_construct_ccxt_endpoint_requests(monkeypatch):
+    _install_router(
+        monkeypatch,
+        {
+            "/linear-swap-api/v1/swap_contract_info": _ok(
+                [
+                    {
+                        "contract_code": "BTC-USDT",
+                        "volume_tick": "1",
+                        "price_tick": "0.1",
+                        "min_volume": "1",
+                    }
+                ]
+            ),
+            "/linear-swap-ex/market/detail/merged": {
+                "status": "ok",
+                "tick": {"close": "60000.1", "bid": [], "ask": []},
+            },
+            "/linear-swap-ex/market/depth": {
+                "status": "ok",
+                "tick": {"bids": [], "asks": []},
+            },
+            "/linear-swap-api/v1/swap_price_limit": _ok([]),
+        },
+    )
+    original = server.client.config
+    server.client.config = replace(original, swap_api_version="v5")
+    try:
+        batch = asyncio.run(
+            mcp.call_tool(
+                "htx_submit_trade_batch",
+                {
+                    "intents": [
+                        {
+                            "product": "swap",
+                            "instrument": "BTC-USDT",
+                            "side": "buy",
+                            "quantity": "1",
+                            "client_order_id": 101,
+                        },
+                        {
+                            "product": "swap",
+                            "instrument": "BTC-USDT",
+                            "side": "sell",
+                            "quantity": "1",
+                            "client_order_id": 102,
+                        },
+                    ]
+                },
+            )
+        ).structured_content
+        cancel = asyncio.run(
+            mcp.call_tool(
+                "htx_cancel_trades",
+                {
+                    "product": "swap",
+                    "instrument": "BTC-USDT",
+                    "order_ids": ["1", "2"],
+                },
+            )
+        ).structured_content
+        cancel_all = asyncio.run(
+            mcp.call_tool(
+                "htx_cancel_open_trades",
+                {"product": "swap", "instrument": "BTC-USDT"},
+            )
+        ).structured_content
+    finally:
+        server.client.config = original
+
+    assert batch["execution"]["request"] == {
+        "method": "POST",
+        "path": "/v5/trade/batch_orders",
+        "body": [
+            {
+                "contract_code": "BTC-USDT",
+                "margin_mode": "isolated",
+                "side": "buy",
+                "position_side": "both",
+                "type": "market",
+                "volume": "1",
+                "reduce_only": 0,
+                "client_order_id": "101",
+            },
+            {
+                "contract_code": "BTC-USDT",
+                "margin_mode": "isolated",
+                "side": "sell",
+                "position_side": "both",
+                "type": "market",
+                "volume": "1",
+                "reduce_only": 0,
+                "client_order_id": "102",
+            },
+        ],
+    }
+    assert cancel["request"] == {
+        "method": "POST",
+        "path": "/v5/trade/cancel_batch_orders",
+        "body": {"contract_code": "BTC-USDT", "order_id": ["1", "2"]},
+    }
+    assert cancel_all["request"] == {
+        "method": "POST",
+        "path": "/v5/trade/cancel_all_orders",
+        "body": {"contract_code": "BTC-USDT"},
+    }
+
+
 def test_portfolio_snapshot_filters_zero_spot_balances_and_normalizes_v5_margin(
     monkeypatch,
 ):

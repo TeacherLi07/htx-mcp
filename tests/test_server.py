@@ -218,7 +218,7 @@ def test_toolsets_can_publish_only_the_selected_semantic_layer(monkeypatch):
     assert "hidden_tool" not in names
 
 
-def test_trading_toolset_includes_read_only_private_diagnosis(monkeypatch):
+def test_trading_toolset_excludes_diagnosis(monkeypatch):
     monkeypatch.setenv("HTX_TOOLSETS", "trading")
     local = server.HtxMcpServer("trading-toolset-test")
 
@@ -235,11 +235,8 @@ def test_trading_toolset_includes_read_only_private_diagnosis(monkeypatch):
         return {"ok": "yes"}
 
     names = {tool.name for tool in asyncio.run(local.list_tools())}
-    assert {
-        "htx_preview_trade",
-        "htx_submit_trade",
-        "htx_diagnose_private_access",
-    } <= names
+    assert {"htx_preview_trade", "htx_submit_trade"} <= names
+    assert "htx_diagnose_private_access" not in names
 
 
 def test_tool_metadata_describes_every_published_argument():

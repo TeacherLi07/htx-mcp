@@ -140,12 +140,7 @@ async def futures_v5_get_open_orders(
 async def futures_v5_get_order(
     contract_code: server.ContractCode,
     order_id: server.ExchangeOrderId | None = None,
-    client_order_id: Annotated[
-        str | None,
-        Field(
-            description="Optional v5 client order identifier when exchange order ID is unavailable."
-        ),
-    ] = None,
+    client_order_id: server.FuturesClientOrderId | None = None,
     margin_mode: server.MarginMode | None = None,
 ) -> dict[str, Any]:
     """Read one v5 order by exchange or client order ID so an accepted mutation can be reconciled."""
@@ -155,7 +150,7 @@ async def futures_v5_get_order(
     return await v5_get_order(
         contract_code,
         order_id=server._text(order_id, "order_id") if order_id else None,
-        client_order_id=client_order_id,
+        client_order_id=str(client_order_id) if client_order_id is not None else None,
         margin_mode=margin_mode,
     )
 

@@ -29,6 +29,7 @@ from .indicators import (
 )
 from .models import (
     AccountSnapshotResult,
+    BatchTradeSubmissionResult,
     Confirm,
     DecimalAmount,
     DecimalPrice,
@@ -99,7 +100,7 @@ IncludeRaw = Annotated[
 SemanticClientOrderId = Annotated[
     str | int,
     Field(
-        description="Client order ID: spot accepts a 1-64 character identifier; v5 swaps also accept that form or a positive 64-bit integer, while legacy swaps require the integer form."
+        description="Client order ID: spot accepts a 1-64 character identifier; HTX V5 and legacy swaps require a decimal positive 64-bit integer."
     ),
 ]
 
@@ -210,9 +211,7 @@ def _wire(value: Any) -> Any:
     return value
 
 
-def _client_order_id(
-    product: str, value: str | int | None, *, allow_v5_strings: bool = False
-) -> str | None:
+def _client_order_id(product: str, value: str | int | None) -> str | None:
     """Validate product-specific order IDs used outside TradeIntent."""
 
     if value is None:
@@ -523,7 +522,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
         period: str,
         candle_size: int,
         include_raw: bool,
-    ) -> dict[str, Any]:
+    ) -> MarketSnapshotResult:
         code = (
             api._symbol(instrument) if product == "spot" else api._contract(instrument)
         )
@@ -2015,6 +2014,70 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             }
         return {"validation": validation, "execution": execution}
 
+    @mcp.tool(annotations=api.WRITE, toolsets={"execution"})
+    async def htx_submit_trade_batch(
+        intents: Annotated[
+            list[TradeIntent],
+            Field(
+                min_length=1,
+                max_length=10,
+                description="1-10 V5 USDT-swap trade intents. Every item must use the same contract and margin mode; all are validated before one batch request is made.",
+            ),
+        ],
+        confirm: Confirm = False,
+    ) -> BatchTradeSubmissionResult:
+        """Validate then submit up to ten V5 swap orders in one atomic-intent batch.
+
+        HTX may accept some items and reject others, so inspect every returned item
+        and reconcile accepted orders individually. This tool is unavailable for
+        legacy swap accounts; use the opt-in advanced compatibility tools there.
+        """
+
+        if api.client.config.swap_api_version != "v5":
+            raise ToolError(
+                "htx_submit_trade_batch requires HTX_SWAP_API_VERSION=v5; legacy batch orders remain in the advanced toolset"
+            )
+        if any(intent.product != "swap" for intent in intents):
+            raise ToolError("htx_submit_trade_batch accepts USDT-swap intents only")
+        contracts = {api._contract(intent.instrument) for intent in intents}
+        margin_modes = {intent.margin_mode for intent in intents}
+        if len(contracts) != 1 or len(margin_modes) != 1:
+            raise ToolError(
+                "all batch intents must use the same swap contract and margin_mode"
+            )
+        client_ids = [
+            intent.client_order_id for intent in intents if intent.client_order_id
+        ]
+        if len(client_ids) != len(set(map(str, client_ids))):
+            raise ToolError("each non-empty client_order_id in a batch must be unique")
+
+        validations = [await validate(intent) for intent in intents]
+        if any(result["status"] == "blocked" for result in validations):
+            return {
+                "validations": validations,
+                "execution": {
+                    "executed": False,
+                    "dry_run": True,
+                    "reason": "validation_blocked",
+                },
+            }
+        requests = [await build_request(intent, False) for intent in intents]
+        try:
+            execution = await api._mutation(
+                "htx_submit_trade_batch",
+                "/v5/trade/batch_orders",
+                requests,
+                confirm,
+            )
+        except api.HtxError as exc:
+            execution = {
+                "executed": False,
+                "dry_run": False,
+                "ok": False,
+                "error": api._diagnostic_error(exc),
+            }
+        return {"validations": validations, "execution": execution}
+
     @mcp.tool(annotations=api.READ, toolsets={"planning"})
     async def htx_reconcile_trade(
         product: Product,
@@ -2041,9 +2104,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
         if not order_id and not client_order_id:
             raise ToolError("order_id or client_order_id is required")
         try:
-            client_order_id = _client_order_id(
-                product, client_order_id, allow_v5_strings=False
-            )
+            client_order_id = _client_order_id(product, client_order_id)
         except ToolError as exc:
             return {
                 "product": product,
@@ -2119,13 +2180,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
 
         if not order_id and not client_order_id:
             raise ToolError("order_id or client_order_id is required")
-        client_order_id = _client_order_id(
-            product,
-            client_order_id,
-            allow_v5_strings=(
-                product == "swap" and api.client.config.swap_api_version == "v5"
-            ),
-        )
+        client_order_id = _client_order_id(product, client_order_id)
         if product == "spot":
             if client_order_id and not order_id:
                 path = "/v1/order/orders/submitcancelclientorder"
@@ -2151,6 +2206,93 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
         return await api._mutation("htx_cancel_trade", path, body, confirm)
 
     @mcp.tool(annotations=api.WRITE, toolsets={"execution"})
+    async def htx_cancel_trades(
+        product: Product,
+        instrument: Instrument,
+        order_ids: Annotated[
+            list[str],
+            Field(
+                min_length=1,
+                max_length=50,
+                description="Exchange order IDs to cancel. Spot accepts 1-50 IDs; swap accepts 1-10 IDs per HTX batch request.",
+            ),
+        ],
+        margin_mode: MarginMode = "isolated",
+        confirm: Confirm = False,
+    ) -> ExecutionResult:
+        """Cancel multiple normalized spot or swap orders in one exchange request.
+
+        A batch response can contain both successes and failures. Reconcile every
+        supplied ID afterward; do not retry the whole batch after a timeout.
+        """
+
+        normalized_ids = [
+            api._text(order_id, "order_ids item") for order_id in order_ids
+        ]
+        if product == "spot":
+            return await api._mutation(
+                "htx_cancel_trades",
+                "/v1/order/orders/batchcancel",
+                {"order-ids": normalized_ids},
+                confirm,
+            )
+        if len(normalized_ids) > 10:
+            raise ToolError("swap batch cancellation accepts at most 10 order IDs")
+        contract = api._contract(instrument)
+        if api.client.config.swap_api_version == "v5":
+            path = "/v5/trade/cancel_batch_orders"
+            body = {"contract_code": contract, "order_id": normalized_ids}
+        else:
+            path = api._swap_endpoint("cancel", margin_mode)
+            body = {"contract_code": contract, "order_id": ",".join(normalized_ids)}
+        return await api._mutation("htx_cancel_trades", path, body, confirm)
+
+    @mcp.tool(annotations=api.WRITE, toolsets={"execution"})
+    async def htx_cancel_open_trades(
+        product: Product,
+        instrument: Instrument | None = None,
+        margin_mode: MarginMode = "isolated",
+        account_id: Annotated[
+            str | None,
+            Field(
+                description="Optional spot account ID. Omit to use HTX_SPOT_ACCOUNT_ID or resolve the unique working spot account; ignored for swaps."
+            ),
+        ] = None,
+        confirm: Confirm = False,
+    ) -> ExecutionResult:
+        """Cancel all open orders for one product, scoped to an instrument when supplied.
+
+        For swaps an instrument is required to prevent an account-wide cancellation.
+        For spot, omitting it deliberately targets all open orders in the account.
+        """
+
+        if product == "spot":
+            body = api._q(
+                **{
+                    "account-id": await api._resolve_spot_account_id(account_id),
+                    "symbol": api._symbol(instrument) if instrument else None,
+                    "size": 100,
+                }
+            )
+            return await api._mutation(
+                "htx_cancel_open_trades",
+                "/v1/order/orders/batchCancelOpenOrders",
+                body,
+                confirm,
+            )
+        if instrument is None:
+            raise ToolError("instrument is required when cancelling all swap orders")
+        contract = api._contract(instrument)
+        path = (
+            "/v5/trade/cancel_all_orders"
+            if api.client.config.swap_api_version == "v5"
+            else api._swap_endpoint("cancelall", margin_mode)
+        )
+        return await api._mutation(
+            "htx_cancel_open_trades", path, {"contract_code": contract}, confirm
+        )
+
+    @mcp.tool(annotations=api.WRITE, toolsets={"execution"})
     async def htx_close_position(
         instrument: Annotated[
             str, Field(description="USDT-swap contract code such as 'BTC-USDT'.")
@@ -2160,6 +2302,12 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             Literal["buy", "sell"],
             Field(description="Buy closes a short; sell closes a long."),
         ],
+        position_side: Annotated[
+            Literal["long", "short", "both"],
+            Field(
+                description="V5 position side: use long or short in hedge mode; both is only for one-way mode."
+            ),
+        ] = "both",
         price: DecimalPrice | None = None,
         margin_mode: MarginMode = "isolated",
         order_kind: Annotated[
@@ -2185,5 +2333,6 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             price=price,
             margin_mode=margin_mode,
             reduce_only=True,
+            position_side=position_side,
         )
         return await htx_submit_trade(intent, confirm)

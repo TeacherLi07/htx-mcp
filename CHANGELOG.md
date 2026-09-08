@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Keep V5 swap client order IDs numeric, matching the current CCXT HTX implementation and observed exchange validation.
+- Add semantic V5 batch submission plus product-neutral batch and all-open-order cancellation tools.
+- Exclude diagnostics from the `trading` toolset and allow hedge-mode position side to be specified when closing a V5 position.
+
 ## 0.6.1 - 2026-09-07
 
 Add：
@@ -11,7 +17,7 @@ Add：
 
 - Make HTX USDT-margined semantic account, position, order, reconciliation, and cancellation workflows use the v5 multi-asset API by default.
 - Route v5 calls to the derivatives host and apply the independent swap-trading safety gate to every v5 mutation.
-- Add v5 position-side support, string client-order IDs, explicit v5 leverage configuration, and regression coverage for v5 routing and order construction.
+- Add v5 position-side support, numeric client-order IDs, explicit v5 leverage configuration, and regression coverage for v5 routing and order construction.
 - Retain the legacy v1/v3 swap mapping behind `HTX_SWAP_API_VERSION=legacy` for non-migrated accounts.
 
 ## 0.5.6 - 2026-09-07

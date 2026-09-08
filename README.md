@@ -49,7 +49,7 @@ uv run pytest -q
 | `HTX_TIMEOUT_SECONDS` | `20` | 单次 HTTP 请求超时 |
 | `HTX_ENABLE_TRADING` | `false` | 是否允许写接口真正发往 HTX；`false` 时所有写工具只返回 dry-run |
 | `HTX_ENABLE_SWAP_TRADING` | `true` | 是否允许 U 本位合约写接口；`false` 时合约下单、撤单、杠杆和策略写入均只返回 dry-run，现货写接口不受影响 |
-| `HTX_TOOLSETS` | `analysis,planning,ops` | 工具集 allow-list：`analysis`、`planning`、`execution`、`advanced`、`ops`；`core` 等价于 analysis+planning，`trading` 等价于 analysis+planning+execution+ops，`all` 发布完整兼容层 |
+| `HTX_TOOLSETS` | `analysis,planning,ops` | 工具集 allow-list：`analysis`、`planning`、`execution`、`advanced`、`ops`；`core` 等价于 analysis+planning，`trading` 等价于 analysis+planning+execution，`all` 发布完整兼容层 |
 | `MCP_TRANSPORT` | `stdio` | `stdio`、`sse` 或 `streamable-http` |
 | `HTX_LOG_LEVEL` | `INFO` | 文件日志级别：`DEBUG`、`INFO`、`WARNING`、`ERROR` 或 `CRITICAL` |
 | `HTX_LOG_DIR` | `~/.htxmcp` | 日志目录；支持 Windows 和 Ubuntu 路径以及 `~` 展开 |
@@ -279,7 +279,7 @@ U 本位合约接受 `1` 到 `9223372036854775807` 的整数。合约查询和�
 
 等待工具在条件满足或超时前不会向 LLM 发送中间市场更新；仅在有意延后分析时使用，并在工具返回后重新获取市场快照。
 - `planning`：`htx_validate_trade_intent`、`htx_preview_trade`、`htx_reconcile_trade`、`htx_plan_spot_margin_action`。
-- `execution`：`htx_submit_trade`、`htx_cancel_trade`、`htx_close_position`、`htx_execute_spot_margin_action`。
+- `execution`：`htx_submit_trade`、`htx_submit_trade_batch`、`htx_cancel_trade`、`htx_cancel_trades`、`htx_cancel_open_trades`、`htx_close_position`、`htx_execute_spot_margin_action`、`futures_v5_set_leverage`。V5 批量下单每次最多 10 笔，且所有委托必须使用同一合约和保证金模式；HTX 可以部分接受批次，必须逐笔复核。批量撤单支持现货 1-50 笔、合约 1-10 笔；全撤现货可选择标的，合约必须明确标的以避免误撤全账户订单。
 - `ops`：诊断工具。
 
 生产环境可只暴露分析和规划工具：
@@ -294,7 +294,7 @@ $env:HTX_TOOLSETS = "analysis,planning"
 $env:HTX_TOOLSETS = "trading"
 ```
 
-未设置 `HTX_TOOLSETS` 时只发布 `analysis,planning,ops`；需要旧版完整 API 面时显式设置 `HTX_TOOLSETS=all`。自动交易部署建议使用独立的只读分析进程和交易进程。
+未设置 `HTX_TOOLSETS` 时只发布 `analysis,planning,ops`；`trading` 不包含诊断工具，诊断应由单独的 `ops` 进程提供。需要旧版完整 API 面时显式设置 `HTX_TOOLSETS=all`。自动交易部署建议使用独立的只读分析进程、诊断进程和交易进程。
 
 语义工具发布明确的 MCP `outputSchema`。`htx_validate_trade_intent` 只返回状态、规则和检查项；
 需要查看规范化 HTX 请求和采集时的市场上下文时调用 `htx_preview_trade`。`htx_submit_trade`

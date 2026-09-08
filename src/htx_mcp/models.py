@@ -39,7 +39,7 @@ MarginMode = Annotated[
 Confirm = Annotated[
     bool,
     Field(
-        description="Must be true to request execution; false returns a dry-run preview."
+        description="Must be true to request execution; false returns a dry-run preview. HTX_ENABLE_TRADING=true is also required in the server process."
     ),
 ]
 
@@ -158,6 +158,11 @@ class TradePreviewResult(TradePlanResult):
 
 class TradeSubmissionResult(TypedDict):
     validation: TradePlanResult
+    execution: ExecutionResult
+
+
+class BatchTradeSubmissionResult(TypedDict):
+    validations: list[TradePlanResult]
     execution: ExecutionResult
 
 
@@ -290,7 +295,7 @@ class TradeIntent(BaseModel):
     )
     client_order_id: str | int | None = Field(
         default=None,
-        description="Optional reconciliation ID: spot accepts a 1-64 character identifier; swap order endpoints accept a decimal positive 64-bit integer only.",
+        description="Optional reconciliation ID: spot accepts a 1-64 character identifier; HTX V5 and legacy swap endpoints accept only a decimal positive 64-bit integer.",
     )
     take_profit: ProtectionSpec | None = Field(
         default=None,
