@@ -240,6 +240,31 @@ def test_trading_toolset_excludes_diagnosis(monkeypatch):
     assert "htx_diagnose_private_access" not in names
 
 
+def test_unset_toolsets_default_to_the_trading_surface(monkeypatch):
+    monkeypatch.delenv("HTX_TOOLSETS", raising=False)
+    local = server.HtxMcpServer("default-toolset-test")
+
+    @local.tool(annotations=server.READ, toolsets={"analysis"})
+    async def htx_get_market_snapshot() -> dict[str, str]:
+        return {"ok": "yes"}
+
+    @local.tool(annotations=server.READ, toolsets={"planning"})
+    async def htx_preview_trade() -> dict[str, str]:
+        return {"ok": "yes"}
+
+    @local.tool(annotations=server.WRITE, toolsets={"execution"})
+    async def htx_submit_trade() -> dict[str, str]:
+        return {"ok": "yes"}
+
+    @local.tool(annotations=server.READ)
+    async def htx_diagnose_private_access() -> dict[str, str]:
+        return {"ok": "yes"}
+
+    names = {tool.name for tool in asyncio.run(local.list_tools())}
+    assert {"htx_get_market_snapshot", "htx_preview_trade", "htx_submit_trade"} <= names
+    assert "htx_diagnose_private_access" not in names
+
+
 def test_tool_metadata_describes_every_published_argument():
     tools = asyncio.run(mcp.list_tools())
 

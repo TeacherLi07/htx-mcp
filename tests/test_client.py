@@ -187,6 +187,25 @@ def test_mutation_preview_is_default_and_has_no_secret():
     assert "secret" not in str(preview)
 
 
+def test_confirmed_mutation_explains_how_to_enable_execution():
+    client = HtxClient(
+        HtxConfig(api_key="key", api_secret="secret", enable_trading=False),
+        http=FakeHttp(),
+    )
+
+    preview = ensure_confirmation(
+        client,
+        tool_name="spot_place_order",
+        confirm=True,
+        request={"path": "/v1/order/orders/place", "body": {"symbol": "btcusdt"}},
+    )
+
+    assert preview is not None
+    assert preview["dry_run"] is True
+    assert "HTX_ENABLE_TRADING=false" in preview["reason"]
+    assert "HTX_ENABLE_TRADING=true" in preview["reason"]
+
+
 def test_swap_mutation_can_be_disabled_while_spot_trading_remains_enabled():
     client = HtxClient(
         HtxConfig(
@@ -212,9 +231,7 @@ def test_swap_mutation_can_be_disabled_while_spot_trading_remains_enabled():
     )
 
     assert swap_preview["dry_run"] is True
-    assert swap_preview["reason"] == (
-        "HTX_ENABLE_SWAP_TRADING is not enabled on the server"
-    )
+    assert "HTX_ENABLE_SWAP_TRADING=false" in swap_preview["reason"]
     assert spot_permission is None
 
 
@@ -238,7 +255,8 @@ def test_v5_swap_mutation_obeys_the_independent_swap_trading_gate():
 
     assert preview is not None
     assert preview["dry_run"] is True
-    assert preview["reason"] == "HTX_ENABLE_SWAP_TRADING is not enabled on the server"
+    assert "HTX_ENABLE_SWAP_TRADING=false" in preview["reason"]
+    assert "HTX_ENABLE_SWAP_TRADING=true" in preview["reason"]
 
 
 def test_optional_environment_values_are_trimmed(monkeypatch):

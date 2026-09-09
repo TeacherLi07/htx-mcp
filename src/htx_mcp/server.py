@@ -1,8 +1,8 @@
 """MCP server exposing HTX's official spot and USDT-margined swap APIs.
 
-Every state-changing tool has two safety gates: the caller must pass
-``confirm=true`` and the process must set ``HTX_ENABLE_TRADING=true``.
-Otherwise it returns a dry-run preview and makes no mutation request.
+Every state-changing tool requires an explicit ``confirm=true`` request.
+When execution is unavailable, it returns a dry-run preview and makes no
+mutation request.
 """
 
 from __future__ import annotations
@@ -218,7 +218,7 @@ def _enabled_toolsets() -> set[str] | None:
 
     raw = os.getenv("HTX_TOOLSETS")
     if raw is None or not raw.strip():
-        return {"analysis", "planning", "ops"}
+        return {"analysis", "planning", "execution"}
     raw = raw.strip().lower()
     if raw == "all":
         return None
@@ -317,8 +317,8 @@ mcp = HtxMcpServer(
     description="HTX official REST API tools for market data, account inspection, and guarded trading.",
     instructions=(
         "Use read-only tools to inspect live state and contract rules before trading. Prefer readable enum "
-        "values such as all, open_long, greater_or_equal, and hedged when offered. Mutations are dry-run "
-        "unless confirm=true and HTX_ENABLE_TRADING=true are both present. An order acknowledgement is "
+        "values such as all, open_long, greater_or_equal, and hedged when offered. Mutations require "
+        "confirm=true. An order acknowledgement is "
         "not a fill; query order and position status after every mutation."
     ),
 )
@@ -436,7 +436,7 @@ FuturesOffset = Annotated[
 Confirm = Annotated[
     bool,
     Field(
-        description="Must be true to request execution; false returns a dry-run preview. The server must also enable HTX_ENABLE_TRADING."
+        description="Must be true to request execution; false returns a dry-run preview."
     ),
 ]
 SpotDepthType = Annotated[
@@ -1084,8 +1084,7 @@ def configuration_resource() -> str:
             "log_path": str(LOG_PATH),
             "log_max_bytes": LOG_MAX_BYTES,
             "log_retention": "unlimited-uncompressed",
-            "toolsets": os.getenv("HTX_TOOLSETS")
-            or "analysis,planning,ops (semantic default)",
+            "toolsets": os.getenv("HTX_TOOLSETS") or "trading (semantic default)",
             "spot_account_id_configured": bool(client.config.spot_account_id),
             "supported_products": ["spot", "spot-margin", "usdt-margined-swap"],
             "safety": {

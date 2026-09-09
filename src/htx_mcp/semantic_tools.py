@@ -1345,8 +1345,10 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
         market updates and cannot react to them. For an uninterrupted wait, set
         the outer host ``yield_time_ms`` longer than ``timeout_seconds * 1000``
         (with response margin) and set the host tool deadline longer still. The
-        MCP result then becomes the sole wake-up source; then re-check market
-        snapshots after every return.
+        MCP result then becomes the sole wake-up source. Do not run multiple
+        waits in parallel: put all independent conditions in this one call and
+        use ``match='any'`` when any condition should wake the agent; then
+        re-check market snapshots after every return.
         """
 
         period_ms(candle_period)
@@ -2152,7 +2154,9 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
     ) -> SpotMarginPlanResult:
         """Validate and normalize one spot-margin transfer, borrow, or targeted repayment.
 
-        Borrow plans check HTX's live currency quota where available; a ready plan is still a review artifact, not an execution request.
+        Borrow plans check HTX's live currency quota where available. This does
+        not replace the account/debt snapshot; a ready plan is not an execution
+        request.
         """
 
         return await plan_spot_margin_action(action)
@@ -2161,7 +2165,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
     async def htx_execute_spot_margin_action(
         action: SpotMarginAction, confirm: Confirm = False
     ) -> SpotMarginExecutionResult:
-        """Revalidate then execute one supplied spot-margin funding action behind both safety gates.
+        """Revalidate then execute one confirmed spot-margin funding action.
 
         Use the snapshot and plan tools first. After a confirmed mutation, refresh the snapshot because interest, risk, and transferable balances may have changed.
         """
@@ -2194,13 +2198,23 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
 
     @mcp.tool(annotations=api.READ, toolsets={"planning"})
     async def htx_validate_trade_intent(intent: TradeIntent) -> TradeValidationResult:
-        """Validate a product-neutral trade intent and return checks without a request preview."""
+        """Validate one spot or swap intent against fresh HTX rules and last price.
+
+        Returns precision, minimum, order-style, and protection-direction
+        checks without constructing a request. It does not assess account
+        balances, positions, open orders, authorization, or strategy risk.
+        """
 
         return validation_summary(await validate(intent))
 
     @mcp.tool(annotations=api.READ, toolsets={"planning"})
     async def htx_preview_trade(intent: TradeIntent) -> TradePreviewResult:
-        """Build a normalized dry-run request after validating a product-neutral trade intent."""
+        """Revalidate one intent and return its normalized dry-run request.
+
+        This standalone call fetches fresh HTX rules and last price. It does
+        not submit an order or assess account state, authorization, or strategy
+        risk.
+        """
 
         result = await validate(intent)
         result["execution"] = {"executed": False, "dry_run": True}
@@ -2210,7 +2224,12 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
     async def htx_submit_trade(
         intent: TradeIntent, confirm: Confirm = False
     ) -> TradeSubmissionResult:
-        """Revalidate and submit one normalized spot or swap trade intent behind both safety gates."""
+        """Revalidate and submit one confirmed normalized spot or swap intent.
+
+        It refreshes HTX rules and last price, but does not independently
+        inspect balances, positions, open orders, authorization, or strategy
+        risk. Reconcile the accepted order after submission.
+        """
 
         validation = await validate(intent)
         if validation["status"] == "blocked":
@@ -2552,9 +2571,10 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
         ] = "market",
         confirm: Confirm = False,
     ) -> TradeSubmissionResult:
-        """Close a USDT-swap position through the validated execution path.
+        """Submit a confirmed, reduce-only USDT-swap close for the stated quantity.
 
-        The default is a dry run and the final order must be reconciled.
+        This does not discover or close an entire position automatically. Check
+        current position state first and reconcile the final order afterward.
         """
 
         intent = TradeIntent(

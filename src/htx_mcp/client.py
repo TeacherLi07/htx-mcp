@@ -359,7 +359,11 @@ def ensure_confirmation(
         return {
             "executed": False,
             "dry_run": True,
-            "reason": "HTX_ENABLE_TRADING is not enabled on the server",
+            "reason": (
+                "Trading execution is disabled (HTX_ENABLE_TRADING=false). "
+                "Set HTX_ENABLE_TRADING=true and restart the MCP server to submit "
+                "this confirmed request."
+            ),
             "tool": tool_name,
             "request": dict(request),
         }
@@ -370,7 +374,11 @@ def ensure_confirmation(
         return {
             "executed": False,
             "dry_run": True,
-            "reason": "HTX_ENABLE_SWAP_TRADING is not enabled on the server",
+            "reason": (
+                "Swap execution is disabled (HTX_ENABLE_SWAP_TRADING=false). "
+                "Set HTX_ENABLE_SWAP_TRADING=true and restart the MCP server to "
+                "submit this confirmed swap request."
+            ),
             "tool": tool_name,
             "request": dict(request),
         }

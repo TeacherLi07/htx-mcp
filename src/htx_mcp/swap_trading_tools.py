@@ -89,7 +89,7 @@ async def futures_place_order(
 ) -> dict[str, Any]:
     """Place one HTX USDT-margined order with optional exchange-side take-profit and stop-loss protection.
 
-    Inspect contract rules, account state, position mode, leverage, and price limits first. In hedge mode ``offset`` is required; in one-way mode it is normally ``both``. The result means HTX accepted the order instruction, not that a position was opened or closed. This call is a dry run unless ``confirm=true`` and HTX_ENABLE_TRADING=true.
+    Inspect contract rules, account state, position mode, leverage, and price limits first. In hedge mode ``offset`` is required; in one-way mode it is normally ``both``. The result means HTX accepted the order instruction, not that a position was opened or closed. Pass ``confirm=true`` to request submission.
     """
 
     server._validate_futures_order(
@@ -156,7 +156,7 @@ async def futures_place_batch_orders(
 ) -> dict[str, Any]:
     """Place 1-10 HTX USDT-margined orders in one batch request.
 
-    Each item uses the same required and optional fields as futures_place_order. Validate every item against contract precision and margin/position mode first; the result is an acknowledgement, not proof of fills. This call is a dry run unless both confirmation gates pass.
+    Each item uses the same required and optional fields as futures_place_order. Validate every item against contract precision and margin/position mode first; the result is an acknowledgement, not proof of fills. Pass ``confirm=true`` to request submission.
     """
 
     if not 1 <= len(orders) <= 10:
@@ -274,7 +274,7 @@ async def futures_cancel_order(
 ) -> dict[str, Any]:
     """Request cancellation of one HTX USDT-margined order.
 
-    Provide ``order_id`` or ``client_order_id``; if both are supplied HTX receives both identifiers. Query the order afterward to confirm the final status. The call is a dry run unless both confirmation gates pass.
+    Provide ``order_id`` or ``client_order_id``; if both are supplied HTX receives both identifiers. Query the order afterward to confirm the final status. Pass ``confirm=true`` to request cancellation.
     """
 
     if order_id is None and client_order_id is None:
@@ -330,7 +330,7 @@ async def futures_switch_leverage(
 ) -> dict[str, Any]:
     """Change the leverage for one HTX USDT-margined contract.
 
-    HTX may reject the change while orders or positions exist; first query available leverage and current account state. The call is a dry run unless both confirmation gates pass.
+    HTX may reject the change while orders or positions exist; first query available leverage and current account state. Pass ``confirm=true`` to request the change.
     """
 
     server._positive_integer(lever_rate, "lever_rate")
@@ -370,7 +370,7 @@ async def futures_lightning_close_position(
 ) -> dict[str, Any]:
     """Request HTX's lightning close-position order for one USDT-margined position.
 
-    ``direction`` is the order side that closes the position (buy closes short, sell closes long). This is an aggressive execution path; query positions first and verify the result afterward. The call is a dry run unless both confirmation gates pass.
+    ``direction`` is the order side that closes the position (buy closes short, sell closes long). This is an aggressive execution path; query positions first and verify the result afterward. Pass ``confirm=true`` to request the close.
     """
 
     server._positive_number(volume, "volume")
@@ -440,7 +440,7 @@ async def futures_place_trigger_order(
 ) -> dict[str, Any]:
     """Place one HTX USDT-margined trigger order.
 
-    ``trigger_type`` accepts readable greater_or_equal or less_or_equal values. A limit trigger requires ``order_price``; optimal_N uses the selected BBO depth. In hedge mode ``offset`` is required. The call is a dry run unless both confirmation gates pass.
+    ``trigger_type`` accepts readable greater_or_equal or less_or_equal values. A limit trigger requires ``order_price``; optimal_N uses the selected BBO depth. In hedge mode ``offset`` is required. Pass ``confirm=true`` to request submission.
     """
 
     trigger_type = server._trigger_condition(trigger_type)
@@ -566,7 +566,7 @@ async def futures_cancel_trigger_order(
 ) -> dict[str, Any]:
     """Request cancellation of one HTX USDT-margined trigger order.
 
-    Query trigger history afterward to confirm whether the exchange canceled it. The call is a dry run unless both confirmation gates pass.
+    Query trigger history afterward to confirm whether the exchange canceled it. Pass ``confirm=true`` to request cancellation.
     """
 
     order_id = server._text(order_id, "order_id")
@@ -591,7 +591,7 @@ async def futures_cancel_all_trigger_orders(
 ) -> dict[str, Any]:
     """Request cancellation of all HTX USDT-margined trigger orders matching the supplied filters.
 
-    Omitting filters can cancel every trigger order in the selected margin mode, so inspect the dry-run request carefully. The call is a dry run unless both confirmation gates pass.
+    Omitting filters can cancel every trigger order in the selected margin mode, so inspect the request scope carefully. Pass ``confirm=true`` to request cancellation.
     """
 
     return await server._mutation(
@@ -611,7 +611,7 @@ async def futures_switch_position_mode(
 ) -> dict[str, Any]:
     """Change one HTX USDT-margined contract between one-way and hedged position mode.
 
-    Prefer ``one_way`` or ``hedged``; the legacy HTX values ``single_side`` and ``dual_side`` are also accepted. HTX may reject a mode change while orders or positions exist. The call is a dry run unless both confirmation gates pass.
+    Prefer ``one_way`` or ``hedged``; the legacy HTX values ``single_side`` and ``dual_side`` are also accepted. HTX may reject a mode change while orders or positions exist. Pass ``confirm=true`` to request the change.
     """
 
     return await server._mutation(

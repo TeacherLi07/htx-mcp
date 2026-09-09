@@ -93,13 +93,13 @@ async def v5_get_trade_history(
 
 
 async def v5_submit_order(body: dict[str, Any], confirm: bool) -> dict[str, Any]:
-    """Submit one v5 order behind the normal MCP confirmation gates."""
+    """Submit one confirmed v5 order."""
 
     return await server._mutation("v5_submit_order", "/v5/trade/order", body, confirm)
 
 
 async def v5_cancel_order(body: dict[str, Any], confirm: bool) -> dict[str, Any]:
-    """Cancel one v5 order behind the normal MCP confirmation gates."""
+    """Cancel one confirmed v5 order."""
 
     return await server._mutation(
         "v5_cancel_order", "/v5/trade/cancel_order", body, confirm
@@ -225,7 +225,7 @@ async def futures_v5_set_leverage(
     ] = None,
     confirm: server.Confirm = False,
 ) -> dict[str, Any]:
-    """Set v5 leverage behind the normal confirmation gates; v5 does not accept leverage on an order."""
+    """Set confirmed v5 leverage for one contract; v5 does not accept leverage on an order."""
 
     return await server._mutation(
         "futures_v5_set_leverage",

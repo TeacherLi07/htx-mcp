@@ -134,7 +134,7 @@ async def spot_margin_transfer(
 ) -> dict[str, Any]:
     """Transfer an asset into or out of an isolated or cross spot-margin account.
 
-    Isolated transfers require the trading symbol; cross transfers must omit it. This mutation remains a dry run until both safety gates are enabled.
+    Isolated transfers require the trading symbol; cross transfers must omit it. Pass ``confirm=true`` to request the mutation.
     """
 
     if margin_mode == "isolated" and symbol is None:
@@ -202,7 +202,7 @@ async def spot_margin_repay(
 ) -> dict[str, Any]:
     """Repay a specific isolated or cross spot-margin loan order, including applicable interest.
 
-    Query loan orders first and reconcile the account afterward. This mutation remains a dry run until both safety gates are enabled.
+    Query loan orders first and reconcile the account afterward. Pass ``confirm=true`` to request the mutation.
     """
 
     loan_order_id = server._text(loan_order_id, "loan_order_id")

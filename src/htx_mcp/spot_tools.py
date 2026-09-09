@@ -479,7 +479,7 @@ async def spot_dead_man_switch(
 ) -> dict[str, Any]:
     """Arm or disarm HTX's spot dead-man switch.
 
-    ``timeout_seconds=0`` disables it; a value of 5 or more arms automatic cancellation of open spot orders after the timeout. This is a state-changing tool and remains a dry run unless both confirmation gates pass.
+    ``timeout_seconds=0`` disables it; a value of 5 or more arms automatic cancellation of open spot orders after the timeout. Pass ``confirm=true`` to request the state change.
     """
 
     if timeout_seconds != 0 and timeout_seconds < 5:
@@ -536,7 +536,7 @@ async def spot_place_order(
 ) -> dict[str, Any]:
     """Place one HTX spot order, with optional client order ID, stop trigger, and self-match prevention.
 
-    Check spot_get_symbols first for precision and minimums. Market orders omit ``price``; non-market orders require it; stop-limit orders also require ``stop_price`` and ``operator``. The result means HTX accepted the request, not that it filled. The call is a dry run unless ``confirm=true`` and HTX_ENABLE_TRADING=true.
+    Check spot_get_symbols first for precision and minimums. Market orders omit ``price``; non-market orders require it; stop-limit orders also require ``stop_price`` and ``operator``. The result means HTX accepted the request, not that it filled. Pass ``confirm=true`` to request submission.
     """
 
     order_type = order_type.strip().lower()
@@ -571,7 +571,7 @@ async def spot_cancel_order(
 ) -> dict[str, Any]:
     """Request cancellation of one HTX spot order by exchange order ID.
 
-    Cancellation is not proof that no fill occurred; query the order or its match results afterward. The call is a dry run unless both confirmation gates pass.
+    Cancellation is not proof that no fill occurred; query the order or its match results afterward. Pass ``confirm=true`` to request cancellation.
     """
 
     order_id = server._text(order_id, "order_id")
@@ -589,7 +589,7 @@ async def spot_cancel_by_client_id(
 ) -> dict[str, Any]:
     """Request cancellation of one HTX spot order by client order ID.
 
-    Use the same client order ID used during placement and query the resulting order afterward. The call is a dry run unless both confirmation gates pass.
+    Use the same client order ID used during placement and query the resulting order afterward. Pass ``confirm=true`` to request cancellation.
     """
 
     client_order_id = server._text(client_order_id, "client_order_id")
@@ -657,7 +657,7 @@ async def spot_cancel_open_orders(
 ) -> dict[str, Any]:
     """Request cancellation of matching open HTX spot orders.
 
-    Filters can include account, symbol, order types, and side; omitting filters can affect many orders. The call is a dry run unless both confirmation gates pass.
+    Filters can include account, symbol, order types, and side; omitting filters can affect many orders. Pass ``confirm=true`` to request cancellation.
     """
 
     if not 1 <= size <= 100:

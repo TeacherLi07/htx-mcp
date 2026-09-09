@@ -39,7 +39,7 @@ MarginMode = Annotated[
 Confirm = Annotated[
     bool,
     Field(
-        description="Must be true to request execution; false returns a dry-run preview. HTX_ENABLE_TRADING=true is also required in the server process."
+        description="Must be true to request execution; false returns a dry-run preview."
     ),
 ]
 
