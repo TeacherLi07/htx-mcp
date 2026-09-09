@@ -11,4 +11,4 @@ if [[ ! -f "$env_file" ]]; then
 fi
 
 cd "$repository_root"
-exec uv run --env-file "$env_file" python -m htx_mcp.server
+exec uv run --env-file "$env_file" python -m htx_mcp

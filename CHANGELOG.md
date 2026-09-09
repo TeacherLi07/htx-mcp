@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.1 - 2026-09-09
+
+- Add a repository-local marketplace entry and documented direct installation commands.
+- Fix the bundled MCP launcher so package imports do not trigger a circular import at startup.
+
 ## 0.8.0 - 2026-09-09
 
 - Make the repository root the self-contained `htx-trader` Codex plugin root.

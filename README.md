@@ -24,8 +24,24 @@ Ubuntu：
 cp .env.example .env
 ```
 
-将仓库作为本地 plugin 添加到 Codex 后，由 plugin 内部启动 MCP；无需创建或维护单独的
-MCP 客户端配置。
+将仓库作为本地 plugin 安装后，由 plugin 内部启动 MCP；无需创建或维护单独的 MCP
+客户端配置。仓库已包含 marketplace entry；在仓库根目录执行：
+
+```bash
+codex plugin marketplace add "$(pwd)"
+codex plugin add htx-trader@htx-mcp-local
+```
+
+Windows PowerShell 使用：
+
+```powershell
+codex plugin marketplace add $PWD
+codex plugin add htx-trader@htx-mcp-local
+```
+
+安装后请开启新的 Codex 对话，使 skills 与 MCP 工具重新加载。
+更新本地 checkout 后，重新执行 `codex plugin add htx-trader@htx-mcp-local` 以安装新的
+plugin cachebuster，然后开启新对话。
 
 ## 配置
 

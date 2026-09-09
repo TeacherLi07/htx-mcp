@@ -14,7 +14,7 @@ def test_plugin_manifest_connects_skills_and_mcp_server():
     )
 
     assert manifest["name"] == "htx-trader"
-    assert manifest["version"] == "0.8.0"
+    assert manifest["version"].startswith("0.8.1+codex.")
     assert manifest["description"].startswith("For every HTX operation")
     assert (
         "Load the relevant HTX workflow skill"
@@ -41,12 +41,35 @@ def test_plugin_mcp_configuration_is_not_a_separate_artifact():
     assert not (PLUGIN_ROOT / ".mcp.json").exists()
 
 
+def test_marketplace_installs_the_repository_root_plugin():
+    marketplace = json.loads(
+        (PLUGIN_ROOT / ".agents" / "plugins" / "marketplace.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert marketplace["name"] == "htx-mcp-local"
+    entry = marketplace["plugins"][0]
+    assert entry["name"] == "htx-trader"
+    assert entry["source"] == {"source": "local", "path": "."}
+    assert entry["policy"] == {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL",
+    }
+    assert entry["category"] == "Productivity"
+
+
 def test_plugin_env_launcher_is_relative_to_the_plugin_root():
     launcher = (PLUGIN_ROOT / "scripts" / "run-htx-mcp-from-env.sh").read_text(
         encoding="utf-8"
     )
 
-    assert 'uv run --env-file "$env_file" python -m htx_mcp.server' in launcher
+    assert 'uv run --env-file "$env_file" python -m htx_mcp' in launcher
+    assert "python -m htx_mcp.server" not in launcher
+    package_entry_point = (PLUGIN_ROOT / "src" / "htx_mcp" / "__main__.py").read_text(
+        encoding="utf-8"
+    )
+    assert "from .server import main" in package_entry_point
 
 
 def test_plugin_skills_cover_the_trading_lifecycle():
