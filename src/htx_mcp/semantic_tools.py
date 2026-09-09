@@ -19,8 +19,9 @@ from typing import Annotated, Any, Literal
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import BaseModel, Field, model_validator
 
-from .client import HtxApiError
+from .client import HtxError
 from .indicators import (
+    Candle,
     calculate_indicator_values,
     calculate_indicators,
     candles_from_htx,
@@ -29,6 +30,12 @@ from .indicators import (
     indicator_components,
     period_ms,
     price_decimal_places,
+)
+from .market_stream import (
+    HtxMarketStream,
+    HtxStreamStats,
+    HtxWebSocketError,
+    HtxWebSocketSubscriptionError,
 )
 from .models import (
     AccountSnapshotResult,
@@ -1318,32 +1325,28 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                 description="Maximum candles fetched for indicator conditions. It must cover every requested indicator lookback.",
             ),
         ] = 300,
-        timeout_seconds: Annotated[
+        timeout_minutes: Annotated[
             int,
             Field(
                 ge=1,
-                le=10800,
-                description="Hard maximum blocking duration (three hours). The budget includes polls and sleeps. Prefer a condition-driven wait sized to the monitoring horizon; timeout is a safety/review boundary, not a scheduled prompt to manually inspect the market. Configure the MCP host tool deadline and outer yield_time_ms longer than the chosen duration; with a three-hour host deadline, leave response margin below this ceiling so this tool, rather than an intermediate host yield, is the wake-up source.",
+                le=180,
+                description="Hard maximum blocking duration in whole minutes (three hours). The default is 60 minutes. The wait is driven by a persistent HTX WebSocket stream; timeout is a safety/review boundary, not a scheduled prompt to manually inspect the market. Configure the MCP host tool deadline and outer yield_time_ms longer than the chosen duration; with a three-hour host deadline, leave response margin below this ceiling so this tool, rather than an intermediate host yield, is the wake-up source.",
             ),
         ] = 60,
-        poll_interval_seconds: Annotated[
-            int,
-            Field(
-                ge=1,
-                le=60,
-                description="Target minimum interval between read-only poll starts. A larger interval reduces API use but increases wake latency.",
-            ),
-        ] = 5,
     ) -> MarketWaitResult:
-        """Block until bounded declarative market conditions match or the timeout expires.
+        """Block until bounded declarative market conditions match or the wait expires.
 
         This safe MCP wait primitive performs read-only calls, executes no
-        caller-supplied code, has a fixed deadline, and returns compact evidence.
-        A future WebSocket market daemon can satisfy the identical contract.
+        caller-supplied code, keeps one public WebSocket stream per HTX product
+        family, and returns compact evidence. The stream resubscribes after a
+        transient disconnect with the transport's bounded exponential backoff.
+        Indicator conditions use one REST history request as a seed; subsequent
+        condition updates are driven by the live K-line WebSocket channel rather
+        than repeated REST polling.
 
         Important: while this call is pending, the agent receives no intermediate
         market updates and cannot react to them. For an uninterrupted wait, set
-        the outer host ``yield_time_ms`` longer than ``timeout_seconds * 1000``
+        the outer host ``yield_time_ms`` longer than ``timeout_minutes * 60 * 1000``
         (with response margin) and set the host tool deadline longer still. The
         MCP result then becomes the sole wake-up source. Do not run multiple
         waits in parallel: put all independent conditions in this one call and
@@ -1351,7 +1354,11 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
         re-check market snapshots after every return.
         """
 
-        period_ms(candle_period)
+        candle_interval_ms = period_ms(candle_period)
+        started_monotonic = time.monotonic()
+        started_at_ms = int(time.time() * 1000)
+        wait_seconds = timeout_minutes * 60
+        deadline = started_monotonic + wait_seconds
         markets: dict[tuple[str, str], dict[str, Any]] = {}
         condition_markets: dict[int, tuple[str, str]] = {}
         condition_indicators: dict[int, str] = {}
@@ -1369,7 +1376,13 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             )
             market = (condition_product, code)
             markets.setdefault(
-                market, {"indices": [], "indicators": set(), "ticker": False}
+                market,
+                {
+                    "indices": [],
+                    "indicators": set(),
+                    "ticker": False,
+                    "candles": {},
+                },
             )
             markets[market]["indices"].append(index)
             condition_markets[index] = market
@@ -1398,221 +1411,292 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             market_product, market_code = condition_markets[index]
             return f"{market_product}:{market_code}/{metric_key}"
 
-        async def poll_market(
-            market: tuple[str, str], requirements: dict[str, Any]
-        ) -> tuple[tuple[str, str], dict[str, Any]]:
+        channel_markets: dict[str, tuple[str, str]] = {}
+        channel_kinds: dict[str, Literal["ticker", "kline"]] = {}
+        channels_by_product: dict[str, list[str]] = {}
+        stream_stats: dict[str, HtxStreamStats] = {}
+        for market, requirements in markets.items():
             market_product, market_code = market
-            calls: dict[str, Any] = {}
+            channels: list[str] = []
             if requirements["ticker"]:
-                calls["ticker"] = (
-                    api.spot_get_ticker(market_code)
-                    if market_product == "spot"
-                    else api.futures_get_ticker(market_code)
-                )
+                channel = f"market.{market_code}.detail"
+                channels.append(channel)
+                channel_markets[channel.lower()] = market
+                channel_kinds[channel.lower()] = "ticker"
             if requirements["indicators"]:
-                calls["klines"] = (
-                    api.spot_get_klines(
-                        market_code, period=candle_period, size=candle_size
-                    )
-                    if market_product == "spot"
-                    else api.futures_get_klines(
-                        market_code, period=candle_period, size=candle_size
-                    )
+                channel = f"market.{market_code}.kline.{candle_period}"
+                channels.append(channel)
+                channel_markets[channel.lower()] = market
+                channel_kinds[channel.lower()] = "kline"
+            channels_by_product.setdefault(market_product, []).extend(channels)
+            stream_stats.setdefault(market_product, HtxStreamStats())
+
+        async def bootstrap_market(
+            market: tuple[str, str], requirements: dict[str, Any]
+        ) -> None:
+            """Seed indicator history once; live updates are WebSocket-only."""
+
+            if not requirements["indicators"]:
+                return
+            market_product, market_code = market
+            stats = stream_stats[market_product]
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            request = (
+                api.spot_get_klines(market_code, period=candle_period, size=candle_size)
+                if market_product == "spot"
+                else api.futures_get_klines(
+                    market_code, period=candle_period, size=candle_size
                 )
-            responses = await asyncio.gather(*calls.values())
-            return market, dict(zip(calls, responses))
-
-        started_monotonic = time.monotonic()
-        started_at_ms = int(time.time() * 1000)
-        deadline = started_monotonic + timeout_seconds
-        polls = 0
-        successful_polls = 0
-        failed_polls = 0
-        last_success_at_ms: int | None = None
-        warnings: list[Any] = []
-        last_observations: dict[str, str | None] = {}
-
-        while True:
-            observations: dict[str, tuple[Decimal, str | None, int | None]] = {}
-            poll_started = time.monotonic()
+            )
             try:
-                remaining = deadline - time.monotonic()
-                if remaining > 0:
-                    polls += 1
-                    results = await asyncio.wait_for(
-                        asyncio.gather(
-                            *(
-                                poll_market(market, requirements)
-                                for market, requirements in markets.items()
-                            ),
-                            return_exceptions=True,
-                        ),
-                        timeout=remaining,
-                    )
-                    successful = 0
-                    failures: list[Exception] = []
-                    for market_result in results:
-                        if isinstance(market_result, Exception):
-                            failures.append(market_result)
-                            continue
-                        market, payloads = market_result
-                        successful += 1
-                        requirements = markets[market]
-                        if "ticker" in payloads:
-                            last = _ticker(payloads["ticker"])["last"]
-                            if last is None:
-                                failures.append(
-                                    ToolError("HTX ticker did not include a last price")
-                                )
-                            else:
-                                for index in requirements["indices"]:
-                                    if conditions[index].metric == "last_price":
-                                        observations[observation_key(index)] = (
-                                            Decimal(last),
-                                            None,
-                                            None,
-                                        )
-                        if "klines" in payloads:
-                            candles = candles_from_htx(_data(payloads["klines"]))
-                            now_ms = int(time.time() * 1000)
-                            candles = [
-                                candle
-                                for candle in candles
-                                if candle.open_time_ms + period_ms(candle_period)
-                                <= now_ms
-                            ]
-                            indicator_values = calculate_indicator_values(
-                                candles, sorted(requirements["indicators"])
-                            )
-                            price_places = price_decimal_places(candles)
-                            for index in requirements["indices"]:
-                                canonical = condition_indicators.get(index)
-                                if canonical is None:
-                                    continue
-                                value = indicator_values[canonical].get(
-                                    conditions[index].component
-                                )
-                                if value is not None:
-                                    observations[observation_key(index)] = (
-                                        value,
-                                        canonical,
-                                        price_places,
-                                    )
-                    if successful:
-                        successful_polls += 1
-                        last_success_at_ms = int(time.time() * 1000)
-                    if failures:
-                        failed_polls += 1
-                        if len(warnings) < 10:
-                            failure = failures[0]
-                            warnings.append(
-                                {
-                                    "poll": polls,
-                                    "error_type": type(failure).__name__,
-                                    "message": str(failure) or "market request failed",
-                                    "retryable": isinstance(
-                                        failure, (asyncio.TimeoutError, HtxApiError)
-                                    ),
-                                    "at_ms": int(time.time() * 1000),
-                                }
-                            )
+                payload = await asyncio.wait_for(request, timeout=remaining)
+                candles = candles_from_htx(_data(payload))
+                now_ms = int(time.time() * 1000)
+                completed = [
+                    candle
+                    for candle in candles
+                    if candle.open_time_ms + candle_interval_ms <= now_ms
+                ]
+                requirements["candles"] = {
+                    candle.open_time_ms: candle for candle in completed[-candle_size:]
+                }
+            except asyncio.CancelledError:
+                raise
             except (
                 asyncio.TimeoutError,
-                HtxApiError,
+                HtxError,
                 ToolError,
                 ValueError,
                 InvalidOperation,
+                TypeError,
+                KeyError,
             ) as exc:
-                failed_polls += 1
-                if len(warnings) < 10:
-                    message = str(exc) or "operation timed out"
-                    warnings.append(
-                        {
-                            "poll": polls,
-                            "error_type": type(exc).__name__,
-                            "message": message,
-                            "retryable": isinstance(
-                                exc, (asyncio.TimeoutError, HtxApiError)
-                            ),
-                            "at_ms": int(time.time() * 1000),
-                        }
-                    )
-                elif len(warnings) == 10:
-                    warnings.append("Additional failed polls are omitted.")
+                stats.data_errors += 1
+                stats.warn("indicator_bootstrap_error", exc, retryable=True)
 
-            if observations:
-                last_observations = {
-                    key: (
-                        decimal_to_text(value)
-                        if specification is None
-                        else format_indicator_value(
-                            specification,
-                            value,
-                            price_places=price_places,
-                        )
+        await asyncio.gather(
+            *(
+                bootstrap_market(market, requirements)
+                for market, requirements in markets.items()
+            )
+        )
+
+        latest_values: dict[int, tuple[Decimal, str | None, int | None]] = {}
+        warnings: list[Any] = []
+        last_observations: dict[str, str | None] = {}
+        last_success_at_ms: int | None = None
+
+        def apply_message(message: dict[str, Any]) -> None:
+            """Apply one live HTX message to the relevant condition state."""
+
+            nonlocal last_success_at_ms
+            raw_channel = message.get("ch")
+            if not isinstance(raw_channel, str):
+                return
+            channel = raw_channel.lower()
+            market = channel_markets.get(channel)
+            kind = channel_kinds.get(channel)
+            if market is None or kind is None:
+                return
+            requirements = markets[market]
+            if kind == "ticker":
+                last = _ticker(message)["last"]
+                if last is None:
+                    raise ToolError("HTX WebSocket ticker did not include a last price")
+                value = Decimal(last)
+                for index in requirements["indices"]:
+                    if conditions[index].metric == "last_price":
+                        latest_values[index] = (value, None, None)
+            else:
+                tick = message.get("tick")
+                if not isinstance(tick, dict):
+                    raise ToolError(
+                        "HTX WebSocket K-line message did not include a tick"
                     )
-                    for key, (
-                        value,
+                live_candles = candles_from_htx([tick])
+                if not live_candles:
+                    raise ToolError("HTX WebSocket K-line message was empty")
+                live_candle = live_candles[0]
+                candles: dict[int, Candle] = requirements["candles"]
+                candles[live_candle.open_time_ms] = live_candle
+                ordered = sorted(candles.items())
+                requirements["candles"] = dict(ordered[-candle_size:])
+                now_ms = int(time.time() * 1000)
+                completed = [
+                    candle
+                    for candle in requirements["candles"].values()
+                    if candle.open_time_ms + candle_interval_ms <= now_ms
+                ]
+                completed.sort(key=lambda candle: candle.open_time_ms)
+                indicator_values = calculate_indicator_values(
+                    completed, sorted(requirements["indicators"])
+                )
+                price_places = price_decimal_places(completed)
+                for index in requirements["indices"]:
+                    canonical = condition_indicators.get(index)
+                    if canonical is None:
+                        continue
+                    value = indicator_values[canonical].get(conditions[index].component)
+                    if isinstance(value, Decimal):
+                        latest_values[index] = (value, canonical, price_places)
+            last_success_at_ms = int(time.time() * 1000)
+
+        def render_observations() -> dict[str, str | None]:
+            return {
+                observation_key(index): (
+                    decimal_to_text(value)
+                    if specification is None
+                    else format_indicator_value(
                         specification,
-                        price_places,
-                    ) in observations.items()
-                }
-            matched_conditions: list[int] = []
+                        value,
+                        price_places=price_places,
+                    )
+                )
+                for index, (value, specification, price_places) in latest_values.items()
+            }
+
+        def matched_conditions() -> list[int]:
+            matched: list[int] = []
             for index, condition in enumerate(conditions):
-                key = observation_key(index)
-                observed = observations.get(key)
+                observed = latest_values.get(index)
                 if observed is None:
                     continue
-                matched = (
+                if (
                     observed[0] >= condition.value
                     if condition.operator == "gte"
                     else observed[0] <= condition.value
+                ):
+                    matched.append(index)
+            return matched
+
+        update_queue: asyncio.Queue[tuple[str, str, Any]] = asyncio.Queue()
+
+        async def consume_stream(
+            market_product: str,
+            channels: list[str],
+            stats: HtxStreamStats,
+        ) -> None:
+            stream = HtxMarketStream(api.client.config)
+            try:
+                async for message in stream.iter_messages(
+                    market_product, channels, deadline=deadline, stats=stats
+                ):
+                    await update_queue.put(("message", market_product, message))
+            except asyncio.CancelledError:
+                raise
+            except HtxWebSocketSubscriptionError as exc:
+                await update_queue.put(("subscription_error", market_product, exc))
+            except HtxWebSocketError as exc:
+                await update_queue.put(("stream_error", market_product, exc))
+            except (HtxError, OSError, ValueError, TypeError) as exc:
+                await update_queue.put(("stream_error", market_product, exc))
+            finally:
+                await update_queue.put(("stream_done", market_product, None))
+
+        stream_tasks = [
+            asyncio.create_task(
+                consume_stream(
+                    market_product,
+                    list(dict.fromkeys(channels)),
+                    stream_stats[market_product],
                 )
-                if matched:
-                    matched_conditions.append(index)
-            is_triggered = (
-                bool(matched_conditions)
-                if match == "any"
-                else len(matched_conditions) == len(conditions)
             )
-            now_monotonic = time.monotonic()
-            if is_triggered or now_monotonic >= deadline:
-                status: Literal["triggered", "timed_out", "data_unavailable"]
+            for market_product, channels in channels_by_product.items()
+        ]
+
+        try:
+            while time.monotonic() < deadline:
+                if update_queue.empty() and all(task.done() for task in stream_tasks):
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    event_kind, market_product, payload = await asyncio.wait_for(
+                        update_queue.get(), timeout=remaining
+                    )
+                except asyncio.TimeoutError:
+                    break
+                stats = stream_stats[market_product]
+                if event_kind == "stream_done":
+                    continue
+                if event_kind != "message":
+                    stats.warn(
+                        event_kind,
+                        payload,
+                        retryable=event_kind == "stream_error",
+                    )
+                    continue
+                try:
+                    apply_message(payload)
+                except (
+                    ToolError,
+                    ValueError,
+                    InvalidOperation,
+                    TypeError,
+                    KeyError,
+                    IndexError,
+                ) as exc:
+                    stats.data_errors += 1
+                    stats.warn("message_error", exc, retryable=False)
+                    continue
+                last_observations = render_observations()
+                current_matches = matched_conditions()
+                is_triggered = (
+                    bool(current_matches)
+                    if match == "any"
+                    else len(current_matches) == len(conditions)
+                )
                 if is_triggered:
-                    status = "triggered"
-                elif not last_observations:
-                    status = "data_unavailable"
-                else:
-                    status = "timed_out"
-                finished_at_ms = int(time.time() * 1000)
-                return {
-                    "status": status,
-                    "product": next(iter(markets))[0] if not multiple_markets else None,
-                    "instrument": (
-                        next(iter(markets))[1] if not multiple_markets else None
-                    ),
-                    "match": match,
-                    "started_at_ms": started_at_ms,
-                    "finished_at_ms": finished_at_ms,
-                    "elapsed_ms": round((now_monotonic - started_monotonic) * 1000),
-                    "polls": polls,
-                    "requested_timeout_ms": timeout_seconds * 1000,
-                    "effective_deadline_ms": started_at_ms + timeout_seconds * 1000,
-                    "poll_attempts": polls,
-                    "successful_polls": successful_polls,
-                    "failed_polls": failed_polls,
-                    "last_success_at_ms": last_success_at_ms,
-                    "observation_age_ms": (
-                        max(0, int(time.time() * 1000) - last_success_at_ms)
-                        if last_success_at_ms is not None
-                        else None
-                    ),
-                    "observations": last_observations,
-                    "matched_conditions": matched_conditions,
-                    "warnings": warnings,
-                }
-            cadence_delay = poll_interval_seconds - (time.monotonic() - poll_started)
-            await asyncio.sleep(min(max(0, cadence_delay), deadline - now_monotonic))
+                    break
+        finally:
+            for task in stream_tasks:
+                task.cancel()
+            if stream_tasks:
+                await asyncio.gather(*stream_tasks, return_exceptions=True)
+
+        matched = matched_conditions()
+        is_triggered = (
+            bool(matched) if match == "any" else len(matched) == len(conditions)
+        )
+        status: Literal["triggered", "timed_out", "data_unavailable"]
+        if is_triggered:
+            status = "triggered"
+        elif not last_observations:
+            status = "data_unavailable"
+        else:
+            status = "timed_out"
+        finished_monotonic = time.monotonic()
+        finished_at_ms = int(time.time() * 1000)
+        all_stats = list(stream_stats.values())
+        warnings.extend(warning for stats in all_stats for warning in stats.warnings)
+        return {
+            "status": status,
+            "product": next(iter(markets))[0] if not multiple_markets else None,
+            "instrument": (next(iter(markets))[1] if not multiple_markets else None),
+            "match": match,
+            "started_at_ms": started_at_ms,
+            "finished_at_ms": finished_at_ms,
+            "elapsed_ms": round((finished_monotonic - started_monotonic) * 1000),
+            "requested_timeout_minutes": timeout_minutes,
+            "effective_deadline_ms": started_at_ms + wait_seconds * 1000,
+            "connections": sum(stats.connections for stats in all_stats),
+            "reconnections": sum(stats.reconnections for stats in all_stats),
+            "messages": sum(stats.messages for stats in all_stats),
+            "disconnects": sum(stats.disconnects for stats in all_stats),
+            "data_errors": sum(stats.data_errors for stats in all_stats),
+            "last_success_at_ms": last_success_at_ms,
+            "observation_age_ms": (
+                max(0, finished_at_ms - last_success_at_ms)
+                if last_success_at_ms is not None
+                else None
+            ),
+            "observations": last_observations,
+            "matched_conditions": matched,
+            "warnings": warnings,
+        }
 
     @mcp.tool(annotations=api.READ, toolsets={"analysis"})
     async def htx_get_instrument_rules(

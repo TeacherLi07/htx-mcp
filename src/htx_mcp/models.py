@@ -79,12 +79,13 @@ class MarketWaitResult(TypedDict):
     started_at_ms: int
     finished_at_ms: int
     elapsed_ms: int
-    polls: int
-    requested_timeout_ms: int
+    requested_timeout_minutes: int
     effective_deadline_ms: int
-    poll_attempts: int
-    successful_polls: int
-    failed_polls: int
+    connections: int
+    reconnections: int
+    messages: int
+    disconnects: int
+    data_errors: int
     last_success_at_ms: int | None
     observation_age_ms: int | None
     observations: dict[str, str | None]

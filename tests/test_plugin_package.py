@@ -119,7 +119,7 @@ def test_market_wait_skill_requires_the_tool_to_be_the_only_wake_up_source():
     )
 
     assert "`yield_time_ms`" in research
-    assert "`timeout_seconds * 1000`" in research
+    assert "`timeout_minutes * 60 * 1000`" in research
     assert "do not yield while the tool is pending" in research
     assert (
         "Never run multiple `htx_wait_for_market_event` calls in parallel" in research

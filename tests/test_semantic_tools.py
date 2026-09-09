@@ -1,11 +1,10 @@
 import asyncio
-import time
 from dataclasses import replace
 from urllib.parse import urlsplit
 
 import pytest
 
-from htx_mcp import server
+from htx_mcp import semantic_tools, server
 from htx_mcp.server import mcp
 
 
@@ -356,6 +355,48 @@ def _ok(data):
     return {"status": "ok", "code": 200, "data": data}
 
 
+def _install_market_stream(monkeypatch, messages, *, block=False):
+    cancelled = asyncio.Event()
+    started = asyncio.Event()
+
+    class FakeMarketStream:
+        def __init__(self, _config):
+            pass
+
+        async def iter_messages(self, product, _channels, *, deadline, stats):
+            stats.connections += 1
+            started.set()
+            for message in messages.get(product, []):
+                stats.messages += 1
+                yield message
+            if block:
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    cancelled.set()
+            if False:
+                yield {}
+
+    monkeypatch.setattr(semantic_tools, "HtxMarketStream", FakeMarketStream)
+    return started, cancelled
+
+
+def _ticker_message(channel, close):
+    return {
+        "ch": channel,
+        "ts": 1_700_000_000_000,
+        "tick": {"close": close},
+    }
+
+
+def _kline_message(channel, candle):
+    return {
+        "ch": channel,
+        "ts": 1_700_000_000_000,
+        "tick": candle,
+    }
+
+
 def test_swap_market_snapshot_matches_low_level_market_tools(monkeypatch):
     responses = {
         "/linear-swap-ex/market/detail/merged": {
@@ -513,14 +554,10 @@ def test_technical_indicators_report_insufficient_data_without_failing(monkeypat
 
 
 def test_market_wait_triggers_on_a_declarative_price_condition(monkeypatch):
-    _install_router(
+    http = _install_router(monkeypatch, {})
+    _install_market_stream(
         monkeypatch,
-        {
-            "/linear-swap-ex/market/detail/merged": {
-                "status": "ok",
-                "tick": {"close": "60000.1"},
-            }
-        },
+        {"swap": [_ticker_message("market.BTC-USDT.detail", "60000.1")]},
     )
 
     result = asyncio.run(
@@ -536,16 +573,18 @@ def test_market_wait_triggers_on_a_declarative_price_condition(monkeypatch):
                         "value": "60000",
                     }
                 ],
-                "timeout_seconds": 30,
+                "timeout_minutes": 1,
             },
         )
     )
 
     assert result.is_error is False
     assert result.structured_content["status"] == "triggered"
-    assert result.structured_content["polls"] == 1
+    assert result.structured_content["connections"] == 1
+    assert result.structured_content["messages"] == 1
     assert result.structured_content["matched_conditions"] == [0]
     assert result.structured_content["observations"] == {"last_price": "60000.1"}
+    assert http.calls == []
 
 
 def test_market_wait_supports_indicator_aliases_and_all_matching(monkeypatch):
@@ -560,11 +599,17 @@ def test_market_wait_supports_indicator_aliases_and_all_matching(monkeypatch):
         }
         for index in range(6)
     ]
-    _install_router(
+    http = _install_router(
+        monkeypatch,
+        {"/market/history/kline": {"status": "ok", "data": list(reversed(candles))}},
+    )
+    _install_market_stream(
         monkeypatch,
         {
-            "/market/detail/merged": {"status": "ok", "tick": {"close": "60000"}},
-            "/market/history/kline": {"status": "ok", "data": list(reversed(candles))},
+            "spot": [
+                _ticker_message("market.btcusdt.detail", "60000"),
+                _kline_message("market.btcusdt.kline.60min", candles[-1]),
+            ]
         },
     )
 
@@ -598,17 +643,16 @@ def test_market_wait_supports_indicator_aliases_and_all_matching(monkeypatch):
         "last_price": "60000",
         "sma:3/value": "5",
     }
+    assert [path for _method, path, _kwargs in http.calls] == ["/market/history/kline"]
 
 
 def test_market_wait_supports_independent_markets_in_one_wait(monkeypatch):
-    _install_router(
+    _install_router(monkeypatch, {})
+    _install_market_stream(
         monkeypatch,
         {
-            "/market/detail/merged": {"status": "ok", "tick": {"close": "70000"}},
-            "/linear-swap-ex/market/detail/merged": {
-                "status": "ok",
-                "tick": {"close": "60000"},
-            },
+            "spot": [_ticker_message("market.btcusdt.detail", "70000")],
+            "swap": [_ticker_message("market.BTC-USDT.detail", "60000")],
         },
     )
 
@@ -632,7 +676,7 @@ def test_market_wait_supports_independent_markets_in_one_wait(monkeypatch):
                         "value": "70000",
                     },
                 ],
-                "timeout_seconds": 10,
+                "timeout_minutes": 1,
             },
         )
     ).structured_content
@@ -641,19 +685,12 @@ def test_market_wait_supports_independent_markets_in_one_wait(monkeypatch):
     assert result["product"] is None
     assert result["instrument"] is None
     assert result["matched_conditions"] == [0]
-    assert result["observations"] == {
-        "spot:btcusdt/last_price": "70000",
-        "swap:BTC-USDT/last_price": "60000",
-    }
+    assert result["observations"] == {"spot:btcusdt/last_price": "70000"}
 
 
-def test_market_wait_enforces_its_deadline_while_a_market_call_is_slow(monkeypatch):
-    async def slow_ticker(_symbol):
-        await asyncio.sleep(2)
-        return {"status": "ok", "tick": {"close": "60000"}}
-
-    monkeypatch.setattr(server, "spot_get_ticker", slow_ticker)
-    started = time.perf_counter()
+def test_market_wait_returns_data_unavailable_when_stream_has_no_data(monkeypatch):
+    _install_router(monkeypatch, {})
+    _install_market_stream(monkeypatch, {"spot": []})
     result = asyncio.run(
         mcp.call_tool(
             "htx_wait_for_market_event",
@@ -667,30 +704,21 @@ def test_market_wait_enforces_its_deadline_while_a_market_call_is_slow(monkeypat
                         "value": "70000",
                     }
                 ],
-                "timeout_seconds": 1,
+                "timeout_minutes": 1,
             },
         )
     )
-    elapsed = time.perf_counter() - started
 
     assert result.structured_content["status"] == "data_unavailable"
-    assert result.structured_content["polls"] == 1
-    assert elapsed < 1.5
+    assert result.structured_content["connections"] == 1
+    assert result.structured_content["messages"] == 0
 
 
 def test_market_wait_cancellation_cancels_its_inflight_market_request(monkeypatch):
     async def run() -> None:
-        started = asyncio.Event()
-        cancelled = asyncio.Event()
-
-        async def blocked_ticker(_symbol):
-            started.set()
-            try:
-                await asyncio.Event().wait()
-            finally:
-                cancelled.set()
-
-        monkeypatch.setattr(server, "spot_get_ticker", blocked_ticker)
+        started, cancelled = _install_market_stream(
+            monkeypatch, {"spot": []}, block=True
+        )
         task = asyncio.create_task(
             mcp.call_tool(
                 "htx_wait_for_market_event",
@@ -704,7 +732,7 @@ def test_market_wait_cancellation_cancels_its_inflight_market_request(monkeypatc
                             "value": "70000",
                         }
                     ],
-                    "timeout_seconds": 60,
+                    "timeout_minutes": 1,
                 },
             )
         )
@@ -724,24 +752,24 @@ def test_market_wait_tool_warns_that_it_hides_intermediate_market_updates():
 
     assert "no intermediate market updates" in description
     assert "then re-check market snapshots after every return" in description
+    assert "WebSocket" in description
 
 
 def test_market_wait_allows_a_three_hour_condition_window():
     tools = asyncio.run(mcp.list_tools())
     wait_tool = next(tool for tool in tools if tool.name == "htx_wait_for_market_event")
 
-    assert wait_tool.input_schema["properties"]["timeout_seconds"]["maximum"] == 10800
+    timeout_schema = wait_tool.input_schema["properties"]["timeout_minutes"]
+    assert timeout_schema["default"] == 60
+    assert timeout_schema["maximum"] == 180
+    assert "poll_interval_seconds" not in wait_tool.input_schema["properties"]
 
 
 def test_market_wait_returns_timeout_without_a_matching_condition(monkeypatch):
-    _install_router(
+    _install_router(monkeypatch, {})
+    _install_market_stream(
         monkeypatch,
-        {
-            "/market/detail/merged": {
-                "status": "ok",
-                "tick": {"close": "60000.1"},
-            }
-        },
+        {"spot": [_ticker_message("market.btcusdt.detail", "60000.1")]},
     )
     result = asyncio.run(
         mcp.call_tool(
@@ -756,16 +784,15 @@ def test_market_wait_returns_timeout_without_a_matching_condition(monkeypatch):
                         "value": "70000",
                     }
                 ],
-                "timeout_seconds": 1,
-                "poll_interval_seconds": 1,
+                "timeout_minutes": 1,
             },
         )
     )
 
     assert result.structured_content["status"] == "timed_out"
-    assert result.structured_content["polls"] == 1
-    assert result.structured_content["poll_attempts"] == 1
-    assert result.structured_content["successful_polls"] == 1
+    assert result.structured_content["connections"] == 1
+    assert result.structured_content["messages"] == 1
+    assert result.structured_content["disconnects"] == 0
     assert result.structured_content["matched_conditions"] == []
 
 
