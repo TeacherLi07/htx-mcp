@@ -25,7 +25,7 @@ def test_plugin_manifest_connects_skills_and_mcp_server():
     assert htx["command"] == "bash"
     assert htx["args"] == ["./scripts/run-htx-mcp-from-env.sh"]
     assert htx["cwd"] == "."
-    assert htx["tool_timeout_sec"] == 7200
+    assert htx["tool_timeout_sec"] == 10800
     assert manifest["interface"]["capabilities"] == ["Interactive", "Write"]
     assert len(manifest["interface"]["defaultPrompt"]) == 3
 
@@ -80,6 +80,7 @@ def test_plugin_skills_cover_the_trading_lifecycle():
         "htx-margin-operations",
         "htx-operations",
         "htx-trading-desk",
+        "htx-workspace-initialize",
     }
     discovered = {
         path.parent.name for path in (PLUGIN_ROOT / "skills").glob("*/SKILL.md")
@@ -125,6 +126,8 @@ def test_market_wait_skill_requires_the_tool_to_be_the_only_wake_up_source():
     )
     assert "Do not run waits in parallel" in desk
     assert "only wake-up source" in desk
+    assert "up to three hours" in research
+    assert "short timeout cycles used merely to wake up" in research
 
 
 def test_trading_desk_includes_a_standardized_trading_workspace():
@@ -145,3 +148,56 @@ def test_trading_desk_includes_a_standardized_trading_workspace():
         == 1
     )
     assert "日志模板" in (templates / "JOURNAL.md").read_text(encoding="utf-8")
+    assert "## Every-session start" in desk
+    assert "Before analysis, waiting, planning, or any account action" in desk
+    assert "route to `htx-workspace-initialize`" in desk
+    plan_template = (templates / "TRADE_PLAN.md").read_text(encoding="utf-8")
+    journal_template = (templates / "JOURNAL.md").read_text(encoding="utf-8")
+    assert "## 盘外信息基线" in plan_template
+    assert "盘外事实 / 来源 / 发布时间 / 生效或事件时间" in journal_template
+
+
+def test_workspace_initialization_skill_creates_a_read_only_baseline():
+    initializer = (
+        PLUGIN_ROOT / "skills" / "htx-workspace-initialize" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+
+    assert "`TRADE_PLAN.md`" in initializer
+    assert "`state.json`" in initializer
+    assert "`JOURNAL.md`" in initializer
+    assert "htx_get_portfolio_snapshot" in initializer
+    assert "htx_get_market_snapshot" in initializer
+    assert "external context" in initializer
+    assert "bounded external-context baseline" in initializer
+    assert "Prefer primary sources" in initializer
+    assert "Absence of evidence is not a neutral external conclusion" in initializer
+    assert (
+        "does not authorize, submit, cancel, close, transfer, borrow, or repay"
+        in initializer
+    )
+    assert "Use this skill exactly once" in initializer
+    assert "The next step is always `htx-trading-desk`" in initializer
+
+
+def test_specialist_skills_write_only_to_the_standard_trading_records():
+    research = (PLUGIN_ROOT / "skills" / "htx-market-research" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    planning = (PLUGIN_ROOT / "skills" / "htx-trade-plan" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    execution = (
+        PLUGIN_ROOT / "skills" / "htx-guarded-execution" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    margin = (PLUGIN_ROOT / "skills" / "htx-margin-operations" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "`trading/TRADE_PLAN.md`" in research
+    assert "`trading/JOURNAL.md`" in research
+    assert "`trading/TRADE_PLAN.md`" in planning
+    assert "`trading/JOURNAL.md`" in planning
+    assert "`trading/state.json`" in execution
+    assert "`trading/JOURNAL.md`" in execution
+    assert "`trading/state.json`" in margin
+    assert "`trading/JOURNAL.md`" in margin

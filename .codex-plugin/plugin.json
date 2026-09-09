@@ -13,7 +13,7 @@
         "./scripts/run-htx-mcp-from-env.sh"
       ],
       "cwd": ".",
-      "tool_timeout_sec": 7200
+      "tool_timeout_sec": 10800
     }
   },
   "interface": {

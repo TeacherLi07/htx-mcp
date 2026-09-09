@@ -726,6 +726,13 @@ def test_market_wait_tool_warns_that_it_hides_intermediate_market_updates():
     assert "then re-check market snapshots after every return" in description
 
 
+def test_market_wait_allows_a_three_hour_condition_window():
+    tools = asyncio.run(mcp.list_tools())
+    wait_tool = next(tool for tool in tools if tool.name == "htx_wait_for_market_event")
+
+    assert wait_tool.input_schema["properties"]["timeout_seconds"]["maximum"] == 10800
+
+
 def test_market_wait_returns_timeout_without_a_matching_condition(monkeypatch):
     _install_router(
         monkeypatch,

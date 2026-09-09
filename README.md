@@ -135,7 +135,7 @@ chmod 600 .env
 在 Codex 中将此仓库目录作为本地 plugin 添加即可。无需 marketplace、嵌套的
 `plugins/` 目录或机器专属路径。启动新会话后，plugin 会通过
 `scripts/run-htx-mcp-from-env.sh` 使用同一份 `.env` 启动 MCP；所有 HTX MCP 工具调用
-统一使用 `tool_timeout_sec=7200`（两小时），以支持有界市场等待。
+统一使用 `tool_timeout_sec=10800`（三小时），以支持有界的条件式市场等待。
 
 ## 调用日志
 
@@ -251,7 +251,7 @@ U 本位合约接受 `1` 到 `9223372036854775807` 的整数。合约查询和�
 
 当前 API 映射工具仍完整保留在 `advanced` 工具集中；高层语义工具负责聚合常用工作流：
 
-- `analysis`：`htx_get_market_snapshot`、`htx_get_market_context`、`htx_get_technical_indicators`、`htx_wait_for_market_event`、`htx_get_instrument_rules`、`htx_get_account_snapshot`、`htx_get_portfolio_snapshot`、`htx_get_trade_history`、`htx_get_risk_snapshot`、`htx_get_spot_margin_snapshot`。`htx_get_portfolio_snapshot` 是跨现货和合约的盘前账户总览；V5 合约会返回所有合约的当前挂单。`htx_get_market_context` 按需以统一固定点字段返回 K 线、近期成交和合约历史资金费率，供需要审阅市场行为的 REST 分析使用。`htx_get_trade_history` 以统一字段返回实际成交、价格、数量、手续费和时间；复核单笔委托时传 `order_id`，研究近期执行质量时按标的、时间窗和游标分页。`htx_get_technical_indicators` 只返回模型请求的确定性指标（SMA/EMA、RSI、ATR、成交量均线、布林带、MACD、KDJ），默认排除未收盘 K 线；日常分析不暴露原始 K 线。`htx_wait_for_market_event` 只接受有上限的声明式价格/指标阈值，最长一小时且不执行写操作。要让它成为唯一唤醒来源，将外层 `yield_time_ms` 设为大于工具 `timeout_seconds`（毫秒）的值并预留响应余量，同时确保 MCP host 的 tool timeout 更长；中途不要 yield。需要研究或排障时，`advanced` 工具集仍提供完整兼容层。
+- `analysis`：`htx_get_market_snapshot`、`htx_get_market_context`、`htx_get_technical_indicators`、`htx_wait_for_market_event`、`htx_get_instrument_rules`、`htx_get_account_snapshot`、`htx_get_portfolio_snapshot`、`htx_get_trade_history`、`htx_get_risk_snapshot`、`htx_get_spot_margin_snapshot`。`htx_get_portfolio_snapshot` 是跨现货和合约的盘前账户总览；V5 合约会返回所有合约的当前挂单。`htx_get_market_context` 按需以统一固定点字段返回 K 线、近期成交和合约历史资金费率，供需要审阅市场行为的 REST 分析使用。`htx_get_trade_history` 以统一字段返回实际成交、价格、数量、手续费和时间；复核单笔委托时传 `order_id`，研究近期执行质量时按标的、时间窗和游标分页。`htx_get_technical_indicators` 只返回模型请求的确定性指标（SMA/EMA、RSI、ATR、成交量均线、布林带、MACD、KDJ），默认排除未收盘 K 线；日常分析不暴露原始 K 线。`htx_wait_for_market_event` 只接受有上限的声明式价格/指标阈值，最长三小时且不执行写操作。优先使用长时段、条件式等待；超时仅是安全/复盘边界，不应用作人工观察盘面的定时唤醒。要让它成为唯一唤醒来源，将外层 `yield_time_ms` 设为大于工具 `timeout_seconds`（毫秒）的值并预留响应余量；当 MCP host 上限为三小时时，等待时长应低于该上限以留出响应空间；中途不要 yield。需要研究或排障时，`advanced` 工具集仍提供完整兼容层。
 
 等待工具在条件满足或超时前不会向 LLM 发送中间市场更新；仅在有意延后分析时使用，并在工具返回后重新获取市场快照。不要并行启动多个 `htx_wait_for_market_event`：它们不能独立唤醒 agent。需要监控多个市场或任意独立条件时，将每个条件放入同一次调用的 `conditions` 中；跨市场条件分别指定 `product`、`instrument`，并使用 `match="any"`。
 - `planning`：`htx_validate_trade_intent`、`htx_preview_trade`、`htx_reconcile_trade`、`htx_plan_spot_margin_action`。

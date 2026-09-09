@@ -1322,8 +1322,8 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             int,
             Field(
                 ge=1,
-                le=3600,
-                description="Hard maximum blocking duration (one hour). The budget includes polls and sleeps. Configure the MCP host tool deadline and outer yield_time_ms longer than this value so this tool, rather than an intermediate host yield, is the wake-up source.",
+                le=10800,
+                description="Hard maximum blocking duration (three hours). The budget includes polls and sleeps. Prefer a condition-driven wait sized to the monitoring horizon; timeout is a safety/review boundary, not a scheduled prompt to manually inspect the market. Configure the MCP host tool deadline and outer yield_time_ms longer than the chosen duration; with a three-hour host deadline, leave response margin below this ceiling so this tool, rather than an intermediate host yield, is the wake-up source.",
             ),
         ] = 60,
         poll_interval_seconds: Annotated[
