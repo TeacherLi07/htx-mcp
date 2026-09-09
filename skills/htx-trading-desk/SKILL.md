@@ -13,7 +13,17 @@ Authorization is conversation-scoped unless the user restates it in a later conv
 
 For every mutation, refresh relevant state, validate and preview the final action, then reconcile the result. When the action remains in scope and the fresh validation and preview pass, execute it in the same workflow. These checks are a short pre-execution gate, not an invitation to reopen an already-settled thesis or defer for more opinions. Pause only when the action is outside scope, validation is blocked, a material state change invalidates the plan, or HTX/MCP rejects it. A scope guides the agent; the MCP server does not enforce its product or risk limits. It independently requires `confirm=true` on each write call and enabled execution configuration.
 
-Use live HTX data for prices, account state, positions, and orders. Use external research for macro context when it materially affects the decision, and identify source-backed facts separately from trading inferences. You may download public data and run local analysis when it improves the decision. Keep durable theses, watchlists, plans, and post-trade notes in `trading/`; do not store credentials, signed URLs, or raw private account dumps there.
+Use live HTX data for prices, account state, positions, and orders. Use external research for macro context when it materially affects the decision, and identify source-backed facts separately from trading inferences. You may download public data and run local analysis when it improves the decision.
+
+## Trading workspace
+
+Before the first desk action, create `trading/` from this skill's [`assets/trading/`](assets/trading/) templates. Keep exactly these durable records:
+
+- `TRADE_PLAN.md` is the current, actionable thesis. Update it when a setup, trigger, invalidation, sizing rationale, or authorization scope changes. Replace superseded active-plan content instead of accumulating a second plan.
+- `state.json` is the compact current snapshot: authorization record, account/risk summary, watched setups, positions, and open orders. Refresh it after every material market decision and after every mutation is reconciled. Use UTC timestamps and fixed-point strings for monetary or quantity values; use `null` when unknown. Do not save raw API envelopes or private identifiers beyond the order IDs needed to reconcile a trade.
+- `JOURNAL.md` is append-only. Retain its log template and append one completed entry for every observation that changes the plan, plan update, order action, fill, adjustment, close, or review. A journal entry records the decision and outcome; it never grants authorization.
+
+Do not store credentials, signed URLs, or raw private account dumps in any of these files. `trading/` is an audit and continuity record, not a source of execution permission.
 
 Route the work deliberately:
 

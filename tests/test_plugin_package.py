@@ -125,3 +125,23 @@ def test_market_wait_skill_requires_the_tool_to_be_the_only_wake_up_source():
     )
     assert "Do not run waits in parallel" in desk
     assert "only wake-up source" in desk
+
+
+def test_trading_desk_includes_a_standardized_trading_workspace():
+    desk_root = PLUGIN_ROOT / "skills" / "htx-trading-desk"
+    desk = (desk_root / "SKILL.md").read_text(encoding="utf-8")
+    templates = desk_root / "assets" / "trading"
+
+    assert "`TRADE_PLAN.md`" in desk
+    assert "`state.json`" in desk
+    assert "`JOURNAL.md`" in desk
+    assert (templates / "TRADE_PLAN.md").is_file()
+    assert (templates / "state.json").is_file()
+    assert (templates / "JOURNAL.md").is_file()
+    assert (
+        json.loads((templates / "state.json").read_text(encoding="utf-8"))[
+            "schema_version"
+        ]
+        == 1
+    )
+    assert "日志模板" in (templates / "JOURNAL.md").read_text(encoding="utf-8")

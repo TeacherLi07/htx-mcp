@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "updated_at_utc": null,
+  "authorization": {
+    "conversation_scope": null,
+    "permitted_products": [],
+    "permitted_actions": [],
+    "risk_limits": {},
+    "expires_or_rechecks_at_utc": null
+  },
+  "account": {
+    "equity": null,
+    "high_water_mark": null,
+    "drawdown": null,
+    "currency": null
+  },
+  "risk": {
+    "daily_realized_pnl": null,
+    "open_risk": null,
+    "available_margin": null
+  },
+  "watchlist": [],
+  "open_positions": [],
+  "open_orders": []
+}
