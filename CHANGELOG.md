@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.0 - 2026-09-09
+
+- Make the repository root the self-contained `htx-trader` Codex plugin root.
+- Remove the nested plugin wrapper and repository-local marketplace dependency.
+- Embed MCP startup settings in the plugin manifest; do not ship standalone MCP configuration.
+
 ## 0.7.3 - 2026-09-08
 
 - Optimise long number and id

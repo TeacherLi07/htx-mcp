@@ -1,0 +1,30 @@
+{
+  "name": "htx-trader",
+  "version": "0.8.0",
+  "description": "For every HTX operation, load the relevant bundled skill; then research, plan, execute, manage margin, or diagnose.",
+  "author": {
+    "name": "HTX MCP maintainers"
+  },
+  "skills": "./skills/",
+  "mcpServers": {
+    "htx": {
+      "command": "bash",
+      "args": ["./scripts/run-htx-mcp-from-env.sh"],
+      "cwd": ".",
+      "tool_timeout_sec": 7200
+    }
+  },
+  "interface": {
+    "displayName": "HTX Trader",
+    "shortDescription": "Research HTX markets and execute guarded trades.",
+    "longDescription": "Load the relevant HTX workflow skill before acting. The plugin provides live market analysis, validated trade planning, authorized execution, margin operations, and diagnostics.",
+    "developerName": "HTX MCP maintainers",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Write"],
+    "defaultPrompt": [
+      "Monitor BTC-USDT and, within my stated authorization and risk limits, execute when the planned trigger is met.",
+      "Create a monitored watchlist and wait for a confirmed market event.",
+      "Review my HTX portfolio and open orders."
+    ]
+  }
+}

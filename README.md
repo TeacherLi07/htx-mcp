@@ -1,11 +1,8 @@
-# HTX Official API MCP
+# HTX Trader
 
-这是一个基于 HTX 官方 REST API 的 Python MCP Server，使用 `uv` 管理环境，覆盖
-现货与 USDT 本位合约的行情、账户、订单、仓位、策略单、杠杆和历史数据。
-
-仓库现在以可安装的 `HTX Trader` plugin 为主要交付物；MCP 是它的实时数据和受控执行
-边界，skills 则为市场研究、交易规划、受保护执行、杠杆操作和排障提供按需加载的工作流。
-plugin 位于 `plugins/htx-trader/`。
+这是一个自包含的 Codex plugin。仓库根目录就是 plugin 根目录：`.codex-plugin/` 保存
+清单和内部 MCP 连接配置，`skills/` 保存工作流，`src/` 则是该服务的实现。
+它覆盖 HTX 现货与 USDT 本位合约的行情、账户、订单、仓位、策略单、杠杆和历史数据。
 
 服务通过 MCP 暴露三类能力：
 
@@ -13,32 +10,22 @@ plugin 位于 `plugins/htx-trader/`。
 - Resource：`htx://configuration`，返回不含密钥的运行配置和安全策略。
 - Prompt：`trade_preflight`，生成交易前检查清单。
 
-## 安装
+## 安装与配置
 
 要求 Python 3.10+ 和 `uv`。Windows PowerShell：
 
 ```powershell
-uv sync --dev
 Copy-Item .env.example .env
-uv run --env-file .env htx-mcp
 ```
 
 Ubuntu：
 
 ```bash
-uv sync --dev
 cp .env.example .env
-uv run --env-file .env htx-mcp
 ```
 
-`.env` 不会被 MCP Server 自己解析；使用 `uv run --env-file .env` 启动，或由 MCP
-客户端通过 `env` 字段传入同样的变量。
-
-验证安装：
-
-```powershell
-uv run pytest -q
-```
+将仓库作为本地 plugin 添加到 Codex 后，由 plugin 内部启动 MCP；无需创建或维护单独的
+MCP 客户端配置。
 
 ## 配置
 
@@ -54,7 +41,7 @@ uv run pytest -q
 | `HTX_READ_RETRY_ATTEMPTS` | `2` | 只读 GET 遇到 `PoolTimeout`、连接超时或读超时时的额外重试次数；写请求绝不自动重试 |
 | `HTX_ENABLE_TRADING` | `false` | 是否允许写接口真正发往 HTX；`false` 时所有写工具只返回 dry-run |
 | `HTX_ENABLE_SWAP_TRADING` | `true` | 是否允许 U 本位合约写接口；`false` 时合约下单、撤单、杠杆和策略写入均只返回 dry-run，现货写接口不受影响 |
-| `HTX_TOOLSETS` | `analysis,planning,ops` | 工具集 allow-list：`analysis`、`planning`、`execution`、`advanced`、`ops`；`core` 等价于 analysis+planning，`trading` 等价于 analysis+planning+execution，`all` 发布完整兼容层 |
+| `HTX_TOOLSETS` | `trading` | 工具集 allow-list：`analysis`、`planning`、`execution`、`advanced`、`ops`；`core` 等价于 analysis+planning，`trading` 等价于 analysis+planning+execution，`all` 发布完整兼容层 |
 | `MCP_TRANSPORT` | `stdio` | `stdio`、`sse` 或 `streamable-http` |
 | `HTX_LOG_LEVEL` | `INFO` | 文件日志级别：`DEBUG`、`INFO`、`WARNING`、`ERROR` 或 `CRITICAL` |
 | `HTX_LOG_DIR` | `~/.htxmcp` | 日志目录；支持 Windows 和 Ubuntu 路径以及 `~` 展开 |
@@ -79,8 +66,6 @@ HTTPX 默认读取进程的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 和 `NO_P
 请求会通过 HTTP CONNECT 隧道转发。仅 SOCKS5 可用时，需要将代理写成
 `socks5://127.0.0.1:7897` 并安装 HTTPX 的 SOCKS extra。
 
-## MCP 客户端接入
-
 ## 切换 U 本位账户类型
 
 `scripts/switch_to_non_unified_account.py` 是独立于 MCP 的受保护切换脚本。它只读取
@@ -102,8 +87,8 @@ uv run python scripts/switch_to_non_unified_account.py --confirm-switch-to-non-u
 
 ### Codex plugin
 
-`plugins/htx-trader/` 是本仓库的 Codex plugin。它默认启动只读的语义化
-`analysis,planning,ops` 工具面，并将 HTX 凭据从宿主环境转发给 MCP 进程。它同时提供：
+仓库根目录是 `HTX Trader` Codex plugin。它默认启动语义化 `trading`
+工具面（分析、规划和执行工具；执行默认仍为 dry-run），并将 HTX 凭据从宿主环境转发给 MCP 进程。它同时提供：
 
 - `htx-market-research`：市场研究、监控条件和有界等待；无交易条件时在 `trading/` 留下观察计划。
 - `htx-trading-desk`：持续实盘测试的总控路由，协调研究、计划、等待和本地交易笔记。
@@ -112,8 +97,8 @@ uv run python scripts/switch_to_non_unified_account.py --confirm-switch-to-non-u
 - `htx-margin-operations`：杠杆资金、借还款和杠杆订单的独立流程。
 - `htx-operations`：私有 API、工具集和账户模式排障。
 
-安装 plugin 后，若需要真实交易，必须由部署者显式将 plugin 的 MCP 配置改为
-`HTX_TOOLSETS="trading"` 和 `HTX_ENABLE_TRADING="true"`；skills 不会绕过服务端双重确认。
+安装 plugin 后，若需要真实交易，部署者只需在启动环境中将
+`HTX_ENABLE_TRADING="true"`；skills 不会绕过服务端双重确认。
 用户的交易授权范围只约束 agent 行为；它不是 MCP 服务端的权限策略，并且默认仅在当前对话有效。
 低层端点仍由 `HTX_TOOLSETS=all` 提供，供高级兼容与诊断使用。
 
@@ -128,86 +113,13 @@ chmod 600 .env
 
 在 `.env` 设置 `HTX_API_KEY`、`HTX_API_SECRET`、`HTX_ENABLE_TRADING` 和
 `HTX_TOOLSETS`。例如，`HTX_ENABLE_TRADING=false` 与
-`HTX_TOOLSETS=analysis,planning,ops` 提供只读研究/规划模式；只有明确设置
-`HTX_ENABLE_TRADING=true` 与 `HTX_TOOLSETS=trading` 后才会发布语义化执行工具。
+`HTX_TOOLSETS=trading` 会发布语义化执行工具，但 `HTX_ENABLE_TRADING=false` 时它们仍只返回 dry-run；只有明确设置
+`HTX_ENABLE_TRADING=true` 后才会提交真实写请求。
 
-安装仓库级 marketplace 并安装 plugin：
-
-```bash
-codex plugin marketplace add /workspace/htx-mcp
-codex plugin add htx-trader@htx-mcp-local
-```
-
-启动新会话后，plugin 通过 `scripts/run-htx-mcp-from-env.sh` 用同一份 `.env` 启动 MCP。
-所有 HTX MCP 工具调用统一使用 `tool_timeout_sec=7200`（两小时），以支持有界市场等待。
-若仓库不在 `/workspace/htx-mcp`，将 `plugins/htx-trader/.mcp.json` 的 `cwd` 改为实际绝对路径，
-然后重新安装 plugin。
-
-### Direct Codex MCP configuration
-
-将以下配置添加到用户级 `~/.codex/config.toml`，或受信任项目的
-`.codex/config.toml`。先在启动 Codex 的本地环境中设置 `HTX_API_KEY` 和
-`HTX_API_SECRET`；`env_vars` 会将它们转发给 MCP 进程，因此不必把 Secret 写入
-TOML 文件。
-
-```toml
-[mcp_servers.htx]
-command = "uv"
-args = ["run", "htx-mcp"]
-cwd = "F:/htxauto"
-env = { HTX_ENABLE_TRADING = "false", HTX_TOOLSETS = "analysis,planning,ops" }
-env_vars = ["HTX_API_KEY", "HTX_API_SECRET"]
-```
-
-此配置只发布语义化的分析、规划和诊断工具；即使工具调用传入 `confirm=true`，也只会
-返回 dry-run。完成配置后重启 Codex，并在 TUI 中使用 `/mcp` 检查 `htx` 是否已连接。
-需要交易面时，应使用单独的受限执行进程，并显式配置 `HTX_TOOLSETS="trading"` 和
-`HTX_ENABLE_TRADING="true"`。
-
-stdio 是桌面 MCP 客户端最简单的传输方式。Windows 上可使用绝对路径：
-
-```json
-{
-  "mcpServers": {
-    "htx": {
-      "command": "uv",
-      "args": [
-        "--directory",
-        "F:/htxauto",
-        "run",
-        "htx-mcp"
-      ],
-      "env": {
-        "HTX_API_KEY": "your-access-key",
-        "HTX_API_SECRET": "your-secret-key",
-        "HTX_ENABLE_TRADING": "false"
-      }
-    }
-  }
-}
-```
-
-stdout 只用于 MCP JSON-RPC；正常运行时不向 stderr 写日志，避免调用记录进入 Codex 的
-stderr 日志。无法创建日志目录等启动期致命错误仍可能由 Python 在 stderr 报告。
-如果使用 `sse` 或 `streamable-http`，必须在外部配置认证、反向代理和网络访问
-控制；不要将带 Trade 权限的服务直接暴露到公网。
-
-Ubuntu 客户端配置使用同一命令，只需替换项目路径：
-
-```json
-{
-  "mcpServers": {
-    "htx": {
-      "command": "uv",
-      "args": ["--directory", "/home/user/htxauto", "run", "htx-mcp"],
-      "env": {
-        "HTX_ENABLE_TRADING": "false",
-        "HTX_LOG_LEVEL": "INFO"
-      }
-    }
-  }
-}
-```
+在 Codex 中将此仓库目录作为本地 plugin 添加即可。无需 marketplace、嵌套的
+`plugins/` 目录或机器专属路径。启动新会话后，plugin 会通过
+`scripts/run-htx-mcp-from-env.sh` 使用同一份 `.env` 启动 MCP；所有 HTX MCP 工具调用
+统一使用 `tool_timeout_sec=7200`（两小时），以支持有界市场等待。
 
 ## 调用日志
 
@@ -325,7 +237,7 @@ U 本位合约接受 `1` 到 `9223372036854775807` 的整数。合约查询和�
 
 - `analysis`：`htx_get_market_snapshot`、`htx_get_market_context`、`htx_get_technical_indicators`、`htx_wait_for_market_event`、`htx_get_instrument_rules`、`htx_get_account_snapshot`、`htx_get_portfolio_snapshot`、`htx_get_trade_history`、`htx_get_risk_snapshot`、`htx_get_spot_margin_snapshot`。`htx_get_portfolio_snapshot` 是跨现货和合约的盘前账户总览；V5 合约会返回所有合约的当前挂单。`htx_get_market_context` 按需以统一固定点字段返回 K 线、近期成交和合约历史资金费率，供需要审阅市场行为的 REST 分析使用。`htx_get_trade_history` 以统一字段返回实际成交、价格、数量、手续费和时间；复核单笔委托时传 `order_id`，研究近期执行质量时按标的、时间窗和游标分页。`htx_get_technical_indicators` 只返回模型请求的确定性指标（SMA/EMA、RSI、ATR、成交量均线、布林带、MACD、KDJ），默认排除未收盘 K 线；日常分析不暴露原始 K 线。`htx_wait_for_market_event` 只接受有上限的声明式价格/指标阈值，最长一小时且不执行写操作。要让它成为唯一唤醒来源，将外层 `yield_time_ms` 设为大于工具 `timeout_seconds`（毫秒）的值并预留响应余量，同时确保 MCP host 的 tool timeout 更长；中途不要 yield。需要研究或排障时，`advanced` 工具集仍提供完整兼容层。
 
-等待工具在条件满足或超时前不会向 LLM 发送中间市场更新；仅在有意延后分析时使用，并在工具返回后重新获取市场快照。
+等待工具在条件满足或超时前不会向 LLM 发送中间市场更新；仅在有意延后分析时使用，并在工具返回后重新获取市场快照。不要并行启动多个 `htx_wait_for_market_event`：它们不能独立唤醒 agent。需要监控多个市场或任意独立条件时，将每个条件放入同一次调用的 `conditions` 中；跨市场条件分别指定 `product`、`instrument`，并使用 `match="any"`。
 - `planning`：`htx_validate_trade_intent`、`htx_preview_trade`、`htx_reconcile_trade`、`htx_plan_spot_margin_action`。
 - `execution`：`htx_submit_trade`、`htx_submit_trade_batch`、`htx_cancel_trade`、`htx_cancel_trades`、`htx_cancel_open_trades`、`htx_close_position`、`htx_execute_spot_margin_action`、`futures_v5_set_leverage`。V5 批量下单每次最多 10 笔，且所有委托必须使用同一合约和保证金模式；HTX 可以部分接受批次，必须逐笔复核。批量撤单支持现货 1-50 笔、合约 1-10 笔；全撤现货可选择标的，合约必须明确标的以避免误撤全账户订单。
 - `ops`：诊断工具。
@@ -342,7 +254,7 @@ $env:HTX_TOOLSETS = "analysis,planning"
 $env:HTX_TOOLSETS = "trading"
 ```
 
-未设置 `HTX_TOOLSETS` 时只发布 `analysis,planning,ops`；`trading` 不包含诊断工具，诊断应由单独的 `ops` 进程提供。需要旧版完整 API 面时显式设置 `HTX_TOOLSETS=all`。自动交易部署建议使用独立的只读分析进程、诊断进程和交易进程。
+未设置 `HTX_TOOLSETS` 时发布 `trading`（`analysis,planning,execution`）；`trading` 不包含诊断工具，诊断应由单独的 `ops` 进程提供。需要旧版完整 API 面时显式设置 `HTX_TOOLSETS=all`。自动交易部署建议使用独立的只读分析进程、诊断进程和交易进程。
 
 语义工具发布明确的 MCP `outputSchema`。`htx_validate_trade_intent` 只返回状态、规则和检查项；
 需要查看规范化 HTX 请求和采集时的市场上下文时调用 `htx_preview_trade`。`htx_submit_trade`
@@ -393,7 +305,7 @@ Python 3.10 和 3.13 的组合上执行锁文件安装、lint、格式、编译�
 ```powershell
 $env:HTX_TOOLSETS = "trading"
 $env:HTX_ENABLE_TRADING = "true"
-uv run --env-file .env htx-mcp
+uv run --env-file .env python -m htx_mcp.server
 ```
 
 使用 `confirm=true` 调用 `htx_submit_trade` 后，预期由 HTX 返回权限错误；验证完成后恢复
