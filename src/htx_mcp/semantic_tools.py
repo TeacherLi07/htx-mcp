@@ -1303,6 +1303,14 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                 description="Declarative conditions to wait for. Each condition may override product and instrument, allowing independent markets in one wait. A condition checks last_price or a supported technical indicator (for example indicator='rsi:14' or 'macd:12,26,9' with component='histogram'). Arbitrary code and expressions are not accepted.",
             ),
         ],
+        thesis_valid_for_minutes: Annotated[
+            int,
+            Field(
+                ge=15,
+                le=480,
+                description="Required validity window for the current market thesis, in whole minutes (15-480). Market conditions wake the agent immediately during this window. When it expires, refresh the market snapshot and re-evaluate the thesis. Choose a duration justified by the strategy and timeframe; use conditions rather than short wake-up cycles to observe the market. Configure the MCP host tool deadline and outer yield_time_ms longer than this duration; with an eight-hour host deadline, leave response margin below this ceiling so this tool is the wake-up source.",
+            ),
+        ],
         product: Product | None = None,
         instrument: Instrument | None = None,
         match: Annotated[
@@ -1325,16 +1333,8 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                 description="Maximum candles fetched for indicator conditions. It must cover every requested indicator lookback.",
             ),
         ] = 300,
-        timeout_minutes: Annotated[
-            int,
-            Field(
-                ge=1,
-                le=180,
-                description="Hard maximum blocking duration in whole minutes (three hours). The default is 60 minutes. The wait is driven by a persistent HTX WebSocket stream; timeout is a safety/review boundary, not a scheduled prompt to manually inspect the market. Configure the MCP host tool deadline and outer yield_time_ms longer than the chosen duration; with a three-hour host deadline, leave response margin below this ceiling so this tool, rather than an intermediate host yield, is the wake-up source.",
-            ),
-        ] = 60,
     ) -> MarketWaitResult:
-        """Block until bounded declarative market conditions match or the wait expires.
+        """Wait while a bounded market thesis remains valid.
 
         This safe MCP wait primitive performs read-only calls, executes no
         caller-supplied code, keeps one public WebSocket stream per HTX product
@@ -1346,18 +1346,20 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
 
         Important: while this call is pending, the agent receives no intermediate
         market updates and cannot react to them. For an uninterrupted wait, set
-        the outer host ``yield_time_ms`` longer than ``timeout_minutes * 60 * 1000``
+        the outer host ``yield_time_ms`` longer than
+        ``thesis_valid_for_minutes * 60 * 1000``
         (with response margin) and set the host tool deadline longer still. The
         MCP result then becomes the sole wake-up source. Do not run multiple
         waits in parallel: put all independent conditions in this one call and
-        use ``match='any'`` when any condition should wake the agent; then
-        re-check market snapshots after every return.
+        use ``match='any'`` when any condition should wake the agent. On a
+        ``thesis_expired`` result, refresh the market snapshot and re-evaluate
+        the thesis before starting another wait.
         """
 
         candle_interval_ms = period_ms(candle_period)
         started_monotonic = time.monotonic()
         started_at_ms = int(time.time() * 1000)
-        wait_seconds = timeout_minutes * 60
+        wait_seconds = thesis_valid_for_minutes * 60
         deadline = started_monotonic + wait_seconds
         markets: dict[tuple[str, str], dict[str, Any]] = {}
         condition_markets: dict[int, tuple[str, str]] = {}
@@ -1483,8 +1485,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             )
         )
 
-        latest_values: dict[int, tuple[Decimal, str | None, int | None]] = {}
-        warnings: list[Any] = []
+        latest_values: dict[int, tuple[Decimal, str | None, int | None, int]] = {}
         last_observations: dict[str, str | None] = {}
         last_success_at_ms: int | None = None
 
@@ -1492,6 +1493,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             """Apply one live HTX message to the relevant condition state."""
 
             nonlocal last_success_at_ms
+            observed_at_ms = int(time.time() * 1000)
             raw_channel = message.get("ch")
             if not isinstance(raw_channel, str):
                 return
@@ -1508,7 +1510,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                 value = Decimal(last)
                 for index in requirements["indices"]:
                     if conditions[index].metric == "last_price":
-                        latest_values[index] = (value, None, None)
+                        latest_values[index] = (value, None, None, observed_at_ms)
             else:
                 tick = message.get("tick")
                 if not isinstance(tick, dict):
@@ -1540,21 +1542,32 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                         continue
                     value = indicator_values[canonical].get(conditions[index].component)
                     if isinstance(value, Decimal):
-                        latest_values[index] = (value, canonical, price_places)
-            last_success_at_ms = int(time.time() * 1000)
+                        latest_values[index] = (
+                            value,
+                            canonical,
+                            price_places,
+                            observed_at_ms,
+                        )
+            last_success_at_ms = observed_at_ms
+
+        def render_observation(
+            observed: tuple[Decimal, str | None, int | None, int],
+        ) -> str:
+            value, specification, price_places, _observed_at_ms = observed
+            return (
+                decimal_to_text(value)
+                if specification is None
+                else format_indicator_value(
+                    specification,
+                    value,
+                    price_places=price_places,
+                )
+            )
 
         def render_observations() -> dict[str, str | None]:
             return {
-                observation_key(index): (
-                    decimal_to_text(value)
-                    if specification is None
-                    else format_indicator_value(
-                        specification,
-                        value,
-                        price_places=price_places,
-                    )
-                )
-                for index, (value, specification, price_places) in latest_values.items()
+                observation_key(index): render_observation(observed)
+                for index, observed in latest_values.items()
             }
 
         def matched_conditions() -> list[int]:
@@ -1595,6 +1608,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             finally:
                 await update_queue.put(("stream_done", market_product, None))
 
+        ended_products: set[str] = set()
         stream_tasks = [
             asyncio.create_task(
                 consume_stream(
@@ -1621,6 +1635,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
                     break
                 stats = stream_stats[market_product]
                 if event_kind == "stream_done":
+                    ended_products.add(market_product)
                     continue
                 if event_kind != "message":
                     stats.warn(
@@ -1661,27 +1676,137 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
         is_triggered = (
             bool(matched) if match == "any" else len(matched) == len(conditions)
         )
-        status: Literal["triggered", "timed_out", "data_unavailable"]
+        wake_reason: Literal[
+            "condition_matched", "thesis_expired", "monitoring_unavailable"
+        ]
         if is_triggered:
-            status = "triggered"
-        elif not last_observations:
-            status = "data_unavailable"
+            wake_reason = "condition_matched"
+        elif time.monotonic() >= deadline:
+            wake_reason = "thesis_expired"
         else:
-            status = "timed_out"
+            wake_reason = "monitoring_unavailable"
         finished_monotonic = time.monotonic()
         finished_at_ms = int(time.time() * 1000)
         all_stats = list(stream_stats.values())
-        warnings.extend(warning for stats in all_stats for warning in stats.warnings)
+
+        def condition_result(index: int) -> dict[str, Any]:
+            condition = conditions[index]
+            market_product, market_code = condition_markets[index]
+            observed = latest_values.get(index)
+            observed_value = render_observation(observed) if observed else None
+            observed_at_ms = observed[3] if observed else None
+            is_matched = index in matched
+            return {
+                "condition_index": index,
+                "product": market_product,
+                "instrument": market_code,
+                "metric": condition.metric,
+                "indicator": condition_indicators.get(index),
+                "component": condition.component
+                if condition.metric == "indicator"
+                else None,
+                "operator": condition.operator,
+                "threshold": decimal_to_text(condition.value),
+                "observed_value": observed_value,
+                "observed_at_ms": observed_at_ms,
+                "observation_age_ms": (
+                    max(0, finished_at_ms - observed_at_ms)
+                    if observed_at_ms is not None
+                    else None
+                ),
+                "matched": is_matched,
+            }
+
+        condition_results = [
+            condition_result(index) for index in range(len(conditions))
+        ]
+        market_coverage: list[dict[str, Any]] = []
+        for (market_product, market_code), requirements in markets.items():
+            condition_indexes = requirements["indices"]
+            observed_indexes = [
+                index for index in condition_indexes if index in latest_values
+            ]
+            observed_at_ms_values = [
+                latest_values[index][3] for index in observed_indexes
+            ]
+            market_last_observed_at_ms = (
+                max(observed_at_ms_values) if observed_at_ms_values else None
+            )
+            if len(observed_indexes) == len(condition_indexes):
+                coverage_status = "complete"
+            elif observed_indexes:
+                coverage_status = "partial"
+            else:
+                coverage_status = "unobserved"
+            channels = []
+            if requirements["ticker"]:
+                channels.append(f"market.{market_code}.detail")
+            if requirements["indicators"]:
+                channels.append(f"market.{market_code}.kline.{candle_period}")
+            market_coverage.append(
+                {
+                    "product": market_product,
+                    "instrument": market_code,
+                    "channels": channels,
+                    "condition_indexes": condition_indexes,
+                    "observed_condition_indexes": observed_indexes,
+                    "unobserved_condition_indexes": [
+                        index
+                        for index in condition_indexes
+                        if index not in latest_values
+                    ],
+                    "status": coverage_status,
+                    "stream_ended": market_product in ended_products,
+                    "last_observed_at_ms": market_last_observed_at_ms,
+                    "observation_age_ms": (
+                        max(0, finished_at_ms - market_last_observed_at_ms)
+                        if market_last_observed_at_ms is not None
+                        else None
+                    ),
+                }
+            )
+
+        warnings: list[dict[str, Any]] = []
+        for market_product, stats in stream_stats.items():
+            for warning in stats.warnings:
+                if isinstance(warning, dict):
+                    warnings.append(
+                        {
+                            "code": str(warning.get("kind", "stream_warning")),
+                            "product": market_product,
+                            "error_type": str(warning.get("error_type", "Error")),
+                            "message": str(
+                                warning.get("message", "WebSocket operation failed")
+                            ),
+                            "retryable": bool(warning.get("retryable", False)),
+                            "at_ms": (
+                                warning["at_ms"]
+                                if isinstance(warning.get("at_ms"), int)
+                                else finished_at_ms
+                            ),
+                        }
+                    )
+                else:
+                    warnings.append(
+                        {
+                            "code": "stream_warning",
+                            "product": market_product,
+                            "error_type": "Error",
+                            "message": str(warning),
+                            "retryable": False,
+                            "at_ms": finished_at_ms,
+                        }
+                    )
         return {
-            "status": status,
+            "wake_reason": wake_reason,
             "product": next(iter(markets))[0] if not multiple_markets else None,
             "instrument": (next(iter(markets))[1] if not multiple_markets else None),
             "match": match,
             "started_at_ms": started_at_ms,
             "finished_at_ms": finished_at_ms,
             "elapsed_ms": round((finished_monotonic - started_monotonic) * 1000),
-            "requested_timeout_minutes": timeout_minutes,
-            "effective_deadline_ms": started_at_ms + wait_seconds * 1000,
+            "thesis_valid_for_minutes": thesis_valid_for_minutes,
+            "thesis_expiry_ms": started_at_ms + wait_seconds * 1000,
             "connections": sum(stats.connections for stats in all_stats),
             "reconnections": sum(stats.reconnections for stats in all_stats),
             "messages": sum(stats.messages for stats in all_stats),
@@ -1695,6 +1820,9 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             ),
             "observations": last_observations,
             "matched_conditions": matched,
+            "condition_results": condition_results,
+            "triggered_conditions": [condition_results[index] for index in matched],
+            "markets": market_coverage,
             "warnings": warnings,
         }
 

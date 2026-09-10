@@ -71,16 +71,61 @@ class TechnicalIndicatorsResult(TypedDict):
     indicators: dict[str, dict[str, Any]]
 
 
+class MarketWaitConditionResult(TypedDict):
+    """The final observation and evaluation for one wait condition."""
+
+    condition_index: int
+    product: Literal["spot", "swap"]
+    instrument: str
+    metric: Literal["last_price", "indicator"]
+    indicator: str | None
+    component: str | None
+    operator: Literal["gte", "lte"]
+    threshold: str
+    observed_value: str | None
+    observed_at_ms: int | None
+    observation_age_ms: int | None
+    matched: bool
+
+
+class MarketWaitCoverage(TypedDict):
+    """Observation coverage for one market in a multi-market wait."""
+
+    product: Literal["spot", "swap"]
+    instrument: str
+    channels: list[str]
+    condition_indexes: list[int]
+    observed_condition_indexes: list[int]
+    unobserved_condition_indexes: list[int]
+    status: Literal["complete", "partial", "unobserved"]
+    stream_ended: bool
+    last_observed_at_ms: int | None
+    observation_age_ms: int | None
+
+
+class MarketWaitWarning(TypedDict):
+    """A display-safe diagnostic emitted by one product stream."""
+
+    code: str
+    product: Literal["spot", "swap"]
+    error_type: str
+    message: str
+    retryable: bool
+    at_ms: int
+
+
 class MarketWaitResult(TypedDict):
-    status: Literal["triggered", "timed_out", "data_unavailable"]
+    wake_reason: Literal[
+        "condition_matched", "thesis_expired", "monitoring_unavailable"
+    ]
     product: Literal["spot", "swap"] | None
     instrument: str | None
     match: Literal["any", "all"]
     started_at_ms: int
     finished_at_ms: int
     elapsed_ms: int
-    requested_timeout_minutes: int
-    effective_deadline_ms: int
+    thesis_valid_for_minutes: int
+    thesis_expiry_ms: int
     connections: int
     reconnections: int
     messages: int
@@ -90,7 +135,10 @@ class MarketWaitResult(TypedDict):
     observation_age_ms: int | None
     observations: dict[str, str | None]
     matched_conditions: list[int]
-    warnings: list[Any]
+    condition_results: list[MarketWaitConditionResult]
+    triggered_conditions: list[MarketWaitConditionResult]
+    markets: list[MarketWaitCoverage]
+    warnings: list[MarketWaitWarning]
 
 
 class InstrumentRulesResult(TypedDict):

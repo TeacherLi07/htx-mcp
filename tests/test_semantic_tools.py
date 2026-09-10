@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import replace
+from unittest.mock import ANY
 from urllib.parse import urlsplit
 
 import pytest
@@ -573,17 +574,48 @@ def test_market_wait_triggers_on_a_declarative_price_condition(monkeypatch):
                         "value": "60000",
                     }
                 ],
-                "timeout_minutes": 1,
+                "thesis_valid_for_minutes": 15,
             },
         )
     )
 
     assert result.is_error is False
-    assert result.structured_content["status"] == "triggered"
+    assert result.structured_content["wake_reason"] == "condition_matched"
     assert result.structured_content["connections"] == 1
     assert result.structured_content["messages"] == 1
     assert result.structured_content["matched_conditions"] == [0]
     assert result.structured_content["observations"] == {"last_price": "60000.1"}
+    assert result.structured_content["triggered_conditions"] == [
+        {
+            "condition_index": 0,
+            "product": "swap",
+            "instrument": "BTC-USDT",
+            "metric": "last_price",
+            "indicator": None,
+            "component": None,
+            "operator": "gte",
+            "threshold": "60000",
+            "observed_value": "60000.1",
+            "observed_at_ms": ANY,
+            "observation_age_ms": ANY,
+            "matched": True,
+        }
+    ]
+    assert result.structured_content["markets"] == [
+        {
+            "product": "swap",
+            "instrument": "BTC-USDT",
+            "channels": ["market.BTC-USDT.detail"],
+            "condition_indexes": [0],
+            "observed_condition_indexes": [0],
+            "unobserved_condition_indexes": [],
+            "status": "complete",
+            "stream_ended": False,
+            "last_observed_at_ms": ANY,
+            "observation_age_ms": ANY,
+        }
+    ]
+    assert result.structured_content["warnings"] == []
     assert http.calls == []
 
 
@@ -620,6 +652,7 @@ def test_market_wait_supports_indicator_aliases_and_all_matching(monkeypatch):
                 "product": "spot",
                 "instrument": "btcusdt",
                 "match": "all",
+                "thesis_valid_for_minutes": 15,
                 "conditions": [
                     {
                         "metric": "last_price",
@@ -637,7 +670,7 @@ def test_market_wait_supports_indicator_aliases_and_all_matching(monkeypatch):
         )
     )
 
-    assert result.structured_content["status"] == "triggered"
+    assert result.structured_content["wake_reason"] == "condition_matched"
     assert result.structured_content["matched_conditions"] == [0, 1]
     assert result.structured_content["observations"] == {
         "last_price": "60000",
@@ -676,16 +709,59 @@ def test_market_wait_supports_independent_markets_in_one_wait(monkeypatch):
                         "value": "70000",
                     },
                 ],
-                "timeout_minutes": 1,
+                "thesis_valid_for_minutes": 15,
             },
         )
     ).structured_content
 
-    assert result["status"] == "triggered"
+    assert result["wake_reason"] == "condition_matched"
     assert result["product"] is None
     assert result["instrument"] is None
     assert result["matched_conditions"] == [0]
     assert result["observations"] == {"spot:btcusdt/last_price": "70000"}
+    assert result["triggered_conditions"][0]["instrument"] == "btcusdt"
+    assert result["condition_results"] == [
+        {
+            "condition_index": 0,
+            "product": "spot",
+            "instrument": "btcusdt",
+            "metric": "last_price",
+            "indicator": None,
+            "component": None,
+            "operator": "gte",
+            "threshold": "70000",
+            "observed_value": "70000",
+            "observed_at_ms": ANY,
+            "observation_age_ms": ANY,
+            "matched": True,
+        },
+        {
+            "condition_index": 1,
+            "product": "swap",
+            "instrument": "BTC-USDT",
+            "metric": "last_price",
+            "indicator": None,
+            "component": None,
+            "operator": "gte",
+            "threshold": "70000",
+            "observed_value": None,
+            "observed_at_ms": None,
+            "observation_age_ms": None,
+            "matched": False,
+        },
+    ]
+    assert result["markets"][1] == {
+        "product": "swap",
+        "instrument": "BTC-USDT",
+        "channels": ["market.BTC-USDT.detail"],
+        "condition_indexes": [1],
+        "observed_condition_indexes": [],
+        "unobserved_condition_indexes": [1],
+        "status": "unobserved",
+        "stream_ended": False,
+        "last_observed_at_ms": None,
+        "observation_age_ms": None,
+    }
 
 
 def test_market_wait_returns_data_unavailable_when_stream_has_no_data(monkeypatch):
@@ -704,14 +780,58 @@ def test_market_wait_returns_data_unavailable_when_stream_has_no_data(monkeypatc
                         "value": "70000",
                     }
                 ],
-                "timeout_minutes": 1,
+                "thesis_valid_for_minutes": 15,
             },
         )
     )
 
-    assert result.structured_content["status"] == "data_unavailable"
+    assert result.structured_content["wake_reason"] == "monitoring_unavailable"
     assert result.structured_content["connections"] == 1
     assert result.structured_content["messages"] == 0
+
+
+def test_market_wait_normalizes_stream_warnings(monkeypatch):
+    _install_router(monkeypatch, {})
+
+    class WarningMarketStream:
+        def __init__(self, _config):
+            pass
+
+        async def iter_messages(self, _product, _channels, *, deadline, stats):
+            stats.connections += 1
+            stats.warn("connection_error", "simulated disconnect", retryable=True)
+            if False:
+                yield {}
+
+    monkeypatch.setattr(semantic_tools, "HtxMarketStream", WarningMarketStream)
+    result = asyncio.run(
+        mcp.call_tool(
+            "htx_wait_for_market_event",
+            {
+                "product": "spot",
+                "instrument": "btcusdt",
+                "conditions": [
+                    {
+                        "metric": "last_price",
+                        "operator": "gte",
+                        "value": "70000",
+                    }
+                ],
+                "thesis_valid_for_minutes": 15,
+            },
+        )
+    ).structured_content
+
+    assert result["warnings"] == [
+        {
+            "code": "connection_error",
+            "product": "spot",
+            "error_type": "Error",
+            "message": "simulated disconnect",
+            "retryable": True,
+            "at_ms": ANY,
+        }
+    ]
 
 
 def test_market_wait_cancellation_cancels_its_inflight_market_request(monkeypatch):
@@ -732,7 +852,7 @@ def test_market_wait_cancellation_cancels_its_inflight_market_request(monkeypatc
                             "value": "70000",
                         }
                     ],
-                    "timeout_minutes": 1,
+                    "thesis_valid_for_minutes": 15,
                 },
             )
         )
@@ -751,21 +871,22 @@ def test_market_wait_tool_warns_that_it_hides_intermediate_market_updates():
     description = " ".join(wait_tool.description.split())
 
     assert "no intermediate market updates" in description
-    assert "then re-check market snapshots after every return" in description
+    assert "thesis_expired`` result, refresh the market snapshot" in description
     assert "WebSocket" in description
 
 
-def test_market_wait_allows_a_three_hour_condition_window():
+def test_market_wait_requires_a_thesis_validity_window():
     tools = asyncio.run(mcp.list_tools())
     wait_tool = next(tool for tool in tools if tool.name == "htx_wait_for_market_event")
 
-    timeout_schema = wait_tool.input_schema["properties"]["timeout_minutes"]
-    assert timeout_schema["default"] == 60
-    assert timeout_schema["maximum"] == 180
+    thesis_schema = wait_tool.input_schema["properties"]["thesis_valid_for_minutes"]
+    assert "thesis_valid_for_minutes" in wait_tool.input_schema["required"]
+    assert thesis_schema["minimum"] == 15
+    assert thesis_schema["maximum"] == 480
     assert "poll_interval_seconds" not in wait_tool.input_schema["properties"]
 
 
-def test_market_wait_returns_timeout_without_a_matching_condition(monkeypatch):
+def test_market_wait_reports_unavailable_monitoring_when_stream_ends(monkeypatch):
     _install_router(monkeypatch, {})
     _install_market_stream(
         monkeypatch,
@@ -784,16 +905,18 @@ def test_market_wait_returns_timeout_without_a_matching_condition(monkeypatch):
                         "value": "70000",
                     }
                 ],
-                "timeout_minutes": 1,
+                "thesis_valid_for_minutes": 15,
             },
         )
     )
 
-    assert result.structured_content["status"] == "timed_out"
+    assert result.structured_content["wake_reason"] == "monitoring_unavailable"
     assert result.structured_content["connections"] == 1
     assert result.structured_content["messages"] == 1
     assert result.structured_content["disconnects"] == 0
     assert result.structured_content["matched_conditions"] == []
+    assert result.structured_content["markets"][0]["stream_ended"] is True
+    assert result.structured_content["condition_results"][0]["matched"] is False
 
 
 def test_swap_market_snapshot_includes_contract_rules_when_requested(monkeypatch):

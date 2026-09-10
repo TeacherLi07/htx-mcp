@@ -25,7 +25,7 @@ def test_plugin_manifest_connects_skills_and_mcp_server():
     assert htx["command"] == "bash"
     assert htx["args"] == ["./scripts/run-htx-mcp-from-env.sh"]
     assert htx["cwd"] == "."
-    assert htx["tool_timeout_sec"] == 10800
+    assert htx["tool_timeout_sec"] == 28800
     assert manifest["interface"]["capabilities"] == ["Interactive", "Write"]
     assert len(manifest["interface"]["defaultPrompt"]) == 3
 
@@ -119,15 +119,15 @@ def test_market_wait_skill_requires_the_tool_to_be_the_only_wake_up_source():
     )
 
     assert "`yield_time_ms`" in research
-    assert "`timeout_minutes * 60 * 1000`" in research
+    assert "`thesis_valid_for_minutes * 60 * 1000`" in research
     assert "do not yield while the tool is pending" in research
     assert (
         "Never run multiple `htx_wait_for_market_event` calls in parallel" in research
     )
     assert "Do not run waits in parallel" in desk
     assert "only wake-up source" in desk
-    assert "up to three hours" in research
-    assert "short timeout cycles used merely to wake up" in research
+    assert "up to eight hours" in research
+    assert "do not use short validity windows for periodic market scans" in research
 
 
 def test_trading_desk_includes_a_standardized_trading_workspace():
