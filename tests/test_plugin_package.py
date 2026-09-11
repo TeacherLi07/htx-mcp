@@ -110,7 +110,7 @@ def test_execution_skill_allows_user_controlled_continuing_authorization():
     assert "If it matches and validation passes, submit immediately" in execution
 
 
-def test_market_wait_skill_requires_the_tool_to_be_the_only_wake_up_source():
+def test_market_wait_skill_omits_codex_host_scheduling_instructions():
     research = (PLUGIN_ROOT / "skills" / "htx-market-research" / "SKILL.md").read_text(
         encoding="utf-8"
     )
@@ -118,14 +118,13 @@ def test_market_wait_skill_requires_the_tool_to_be_the_only_wake_up_source():
         encoding="utf-8"
     )
 
-    assert "`yield_time_ms`" in research
-    assert "`thesis_valid_for_minutes * 60 * 1000`" in research
-    assert "do not yield while the tool is pending" in research
+    assert "yield_time_ms" not in research
+    assert "host deadline" not in research
     assert (
         "Never run multiple `htx_wait_for_market_event` calls in parallel" in research
     )
     assert "Do not run waits in parallel" in desk
-    assert "only wake-up source" in desk
+    assert "only wake-up source" not in desk
     assert "up to eight hours" in research
     assert "do not use short validity windows for periodic market scans" in research
 

@@ -1308,7 +1308,7 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
             Field(
                 ge=15,
                 le=480,
-                description="Required validity window for the current market thesis, in whole minutes (15-480). Market conditions wake the agent immediately during this window. When it expires, refresh the market snapshot and re-evaluate the thesis. Choose a duration justified by the strategy and timeframe; use conditions rather than short wake-up cycles to observe the market. Configure the MCP host tool deadline and outer yield_time_ms longer than this duration; with an eight-hour host deadline, leave response margin below this ceiling so this tool is the wake-up source.",
+                description="Required validity window for the current market thesis, in whole minutes (15-480). Market conditions return immediately during this window. When it expires, refresh the market snapshot and re-evaluate the thesis. Choose a duration justified by the strategy and timeframe; use conditions rather than short wake-up cycles to observe the market.",
             ),
         ],
         product: Product | None = None,
@@ -1344,14 +1344,9 @@ def register_semantic_tools(mcp: Any, api: ModuleType) -> None:
         condition updates are driven by the live K-line WebSocket channel rather
         than repeated REST polling.
 
-        Important: while this call is pending, the agent receives no intermediate
-        market updates and cannot react to them. For an uninterrupted wait, set
-        the outer host ``yield_time_ms`` longer than
-        ``thesis_valid_for_minutes * 60 * 1000``
-        (with response margin) and set the host tool deadline longer still. The
-        MCP result then becomes the sole wake-up source. Do not run multiple
-        waits in parallel: put all independent conditions in this one call and
-        use ``match='any'`` when any condition should wake the agent. On a
+        Important: this call does not return intermediate market updates. Do not
+        run multiple waits in parallel: put all independent conditions in this
+        one call and use ``match='any'`` when any condition should return. On a
         ``thesis_expired`` result, refresh the market snapshot and re-evaluate
         the thesis before starting another wait.
         """

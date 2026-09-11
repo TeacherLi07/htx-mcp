@@ -865,12 +865,12 @@ def test_market_wait_cancellation_cancels_its_inflight_market_request(monkeypatc
     asyncio.run(run())
 
 
-def test_market_wait_tool_warns_that_it_hides_intermediate_market_updates():
+def test_market_wait_tool_explains_that_it_returns_no_intermediate_updates():
     tools = asyncio.run(mcp.list_tools())
     wait_tool = next(tool for tool in tools if tool.name == "htx_wait_for_market_event")
     description = " ".join(wait_tool.description.split())
 
-    assert "no intermediate market updates" in description
+    assert "does not return intermediate market updates" in description
     assert "thesis_expired`` result, refresh the market snapshot" in description
     assert "WebSocket" in description
 
